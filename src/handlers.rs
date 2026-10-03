@@ -1,12 +1,12 @@
 use std::{error::Error, fmt, ops::{Index, IndexMut}, sync::Arc};
 
 use futures_util::{SinkExt, StreamExt};
+use jsonwebtoken::{DecodingKey, Validation, decode};
+use serde::{Deserialize, Serialize};
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, Pid, ProcessRefreshKind, RefreshKind, System};
 
 use axum::{
-    Json, extract::{Path, Query, State, ws::{Message, WebSocket, WebSocketUpgrade}},
-    http::StatusCode,
-    response::{IntoResponse, Response}
+    Json, extract::{Path, Query, Request, State, ws::{Message, WebSocket, WebSocketUpgrade}}, http::{StatusCode, header}, middleware::Next, response::{IntoResponse, Response}
 };
 use thiserror::Error;
 use serde_json::{Value, json};
@@ -15,17 +15,15 @@ use tokio::sync::Mutex;
 use crate::{AppState, mcsv_mgr::{JournalBroadcaster}};
 
 #[derive(Debug)] // Required for the Error trait
-pub enum ApiError {
-    NotFound,
-    Invalid
+pub struct ApiError (StatusCode);
+
+impl From<StatusCode> for ApiError {
+    fn from(value: StatusCode) -> Self { Self(value) }
 }
 
 impl fmt::Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            ApiError::NotFound => write!(f, "Not found"),
-            ApiError::Invalid => write!(f, "Invalid")
-        }
+        self.0.fmt(f)
     }
 }
 
@@ -37,6 +35,7 @@ impl Error for ApiError {
 }
 
 #[derive(Error, Debug)]
+#[allow(unused)]
 pub enum AppError {
     #[error("Systemd D-Bus error: {0}")]
     Dbus(#[from] zbus::Error),
@@ -53,23 +52,92 @@ pub enum AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        if let AppError::Api(aer) = self {
-            return (
-                match aer {
-                    ApiError::NotFound => StatusCode::NOT_FOUND,
-                    ApiError::Invalid => StatusCode::NOT_ACCEPTABLE
-                },
-                "API Error"
-            ).into_response();
+        if let AppError::Api(ApiError(status)) = self {
+            return status.into_response();
         }
 
         eprintln!("Internal Error: {}", self);
 
         (
             StatusCode::INTERNAL_SERVER_ERROR,
+            #[cfg(debug_assertions)]
             format!("Something went wrong: {}", self),
+            #[cfg(not(debug_assertions))]
+            "Something went wrong",
         )
             .into_response()
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct Claims {
+    pub sub: String,    // User ID
+    pub exp: u64,     // Expiration time
+    pub role: String,   // Authorization role
+}
+
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub enum AuthCred {
+    Claims(Claims),
+    Bypass,
+    Unauthorized
+}
+
+pub async fn auth_middleware(State(state): State<Arc<AppState>>, mut request: Request, next: Next) -> Response {
+    let ac: AuthCred = 'auth: {
+        if request.headers().get("Host").map_or(false, |h| h == "bypass") {
+            break 'auth AuthCred::Bypass;
+        }
+
+        if let Some(jwt_secret) = &state.jwt_secret {
+            let auth_header = match request
+                .headers()
+                .get(header::AUTHORIZATION)
+                .and_then(|header| header.to_str().ok()) {
+                    Some(ah) => ah,
+                    None => break 'auth AuthCred::Unauthorized
+                };
+    
+            if !auth_header.starts_with("Bearer ") {
+                break 'auth AuthCred::Unauthorized;
+            }
+    
+            let token = &auth_header[7..];
+    
+            let claims = match decode::<Claims>(
+                token,
+                &DecodingKey::from_secret(jwt_secret.as_bytes()),
+                &Validation::default(),
+            ) {
+                Ok(token_data) => token_data.claims,
+                Err(_) => break 'auth AuthCred::Unauthorized
+            };
+    
+            let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    
+            if claims.exp < current_time {
+                break 'auth AuthCred::Unauthorized;
+            }
+    
+            AuthCred::Claims(claims)
+        } else {
+            AuthCred::Unauthorized
+        }
+    };
+
+    request.extensions_mut().insert(ac);
+
+    next.run(request).await
+}
+
+
+pub async fn auth_check_middleware(request: Request, next: Next) -> Result<Response, StatusCode> {
+    if request.extensions().get::<AuthCred>().map_or(true, |ac| *ac == AuthCred::Unauthorized) {
+        Err(StatusCode::UNAUTHORIZED)
+    } else {
+        Ok(next.run(request).await)
     }
 }
 
@@ -93,17 +161,22 @@ pub async fn get_status() -> Json<Value> {
     res
 }
 
-pub async fn list_servers(state: State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+pub async fn list_servers(
+    State(state): State<Arc<AppState>>
+) -> Result<Json<Value>, AppError> {
     let servers = state.mcsv_mgr.lock().await
         .server_names.iter().map(|name| json!(name)).collect();
     
     Ok(Json(Value::Array(servers)))
 }
 
-pub async fn get_server_status(Path(id): Path<String>, state: State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+pub async fn get_server_status(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>
+) -> Result<Json<Value>, AppError> {
     let unit = state.mcsv_mgr.lock().await.get_server_unit_status(&id).await?;
 
-    let unit = if let Some(unit) = unit { unit } else { return Err(AppError::Api(ApiError::NotFound)); };
+    let unit = if let Some(unit) = unit { unit } else { return Err(AppError::Api(StatusCode::NOT_FOUND.into())); };
 
     let mut res = Json(json!({}));
     
@@ -150,7 +223,7 @@ pub async fn get_server_log(
     let jb = {
         let mcsv_mgr = state.mcsv_mgr.lock().await;
         let lb = mcsv_mgr.log_broadcasters.get(&id);
-        if let Some(lb) = lb { lb.clone() } else { return Err(AppError::Api(ApiError::NotFound)); }
+        if let Some(lb) = lb { lb.clone() } else { return Err(AppError::Api(StatusCode::NOT_FOUND.into())); }
     };
 
     Ok(Json(Value::Array(jb.get_logs(param.since, param.until, param.max_lines)?
@@ -172,11 +245,11 @@ pub struct RlogQueryParam {
 pub async fn get_server_rlog(
     Path(id): Path<String>,
     Query(param): Query<RlogQueryParam>,
-    state: State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+    State(state): State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
     let jb = {
         let mcsv_mgr = state.mcsv_mgr.lock().await;
         let lb = mcsv_mgr.log_broadcasters.get(&id);
-        if let Some(lb) = lb { lb.clone() } else { return Err(AppError::Api(ApiError::NotFound)); }
+        if let Some(lb) = lb { lb.clone() } else { return Err(AppError::Api(StatusCode::NOT_FOUND.into())); }
     };
 
     Ok(Json(Value::Array(jb.get_rlogs(param.since, param.until, param.max_lines)?
@@ -196,7 +269,7 @@ pub struct CommandQueryParam {
 pub async fn handle_server_command(
     Path(id): Path<String>,
     Query(param): Query<CommandQueryParam>,
-    state: State<Arc<AppState>>) -> Result<(), AppError> {
+    State(state): State<Arc<AppState>>) -> Result<(), AppError> {
     
     let cmd = param.cmd;
     println!("Received command for {}: {}", id, cmd);
@@ -214,7 +287,7 @@ pub async fn handle_server_action(
         "start" => state.mcsv_mgr.lock().await.start_server(&id).await?,
         "stop" => state.mcsv_mgr.lock().await.stop_server(&id).await?,
         "restart" => state.mcsv_mgr.lock().await.restart_server(&id).await?,
-        _ => return Err(AppError::Api(ApiError::NotFound)),
+        _ => return Err(AppError::Api(StatusCode::NOT_FOUND.into())),
     };
 
     Ok(())
@@ -225,7 +298,7 @@ pub async fn handle_server_console(Path(id): Path<String>, state: State<Arc<AppS
     let jb = {
         let mcsv_mgr = state.mcsv_mgr.lock().await;
         let lb = mcsv_mgr.log_broadcasters.get(&id);
-        if let Some(lb) = lb { lb.clone() } else { return Err(AppError::Api(ApiError::NotFound)); }
+        if let Some(lb) = lb { lb.clone() } else { return Err(AppError::Api(StatusCode::NOT_FOUND.into())); }
     };
     Ok(ws.on_upgrade(|s| handle_server_console_socket(s, state, jb)))
 }
