@@ -4,9 +4,7 @@ use futures_util::{SinkExt, StreamExt};
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, Pid, ProcessRefreshKind, RefreshKind, System};
 
 use axum::{
-    Json, extract::{Path, Query, State, ws::{Message, WebSocket, WebSocketUpgrade}},
-    http::StatusCode,
-    response::{IntoResponse, Response}
+    Json, extract::{Path, Query, State, ws::{Message, WebSocket, WebSocketUpgrade}}, http::StatusCode, response::{IntoResponse, Response}
 };
 use thiserror::Error;
 use serde_json::{Value, json};
@@ -15,21 +13,15 @@ use tokio::sync::Mutex;
 use crate::{AppState, auth::{self, Auth, Claims}, mcsv_mgr::{JournalBroadcaster}};
 
 #[derive(Debug)] // Required for the Error trait
-pub enum ApiError {
-    NotFound,
-    Invalid,
-    Unauthorized,
-    Forbidden
+pub struct ApiError (StatusCode);
+
+impl From<StatusCode> for ApiError {
+    fn from(value: StatusCode) -> Self { Self(value) }
 }
 
 impl fmt::Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            ApiError::NotFound => write!(f, "Not found"),
-            ApiError::Invalid => write!(f, "Invalid"),
-            ApiError::Unauthorized => write!(f, "Unauthorized"),
-            ApiError::Forbidden => write!(f, "Forbidden")
-        }
+        self.0.fmt(f)
     }
 }
 
@@ -41,6 +33,7 @@ impl Error for ApiError {
 }
 
 #[derive(Error, Debug)]
+#[allow(unused)]
 pub enum AppError {
     #[error("Systemd D-Bus error: {0}")]
     Dbus(#[from] zbus::Error),
@@ -57,23 +50,18 @@ pub enum AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        if let AppError::Api(aer) = self {
-            return (
-                match aer {
-                    ApiError::NotFound => StatusCode::NOT_FOUND,
-                    ApiError::Invalid => StatusCode::NOT_ACCEPTABLE,
-                    ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
-                    ApiError::Forbidden => StatusCode::FORBIDDEN
-                },
-                "API Error"
-            ).into_response();
+        if let AppError::Api(ApiError(status)) = self {
+            return status.into_response();
         }
 
         eprintln!("Internal Error: {}", self);
 
         (
             StatusCode::INTERNAL_SERVER_ERROR,
+            #[cfg(debug_assertions)]
             format!("Something went wrong: {}", self),
+            #[cfg(not(debug_assertions))]
+            "Something went wrong",
         )
             .into_response()
     }
@@ -116,7 +104,7 @@ pub async fn get_server_status(auth: Auth, Path(id): Path<String>, state: State<
     auth.require(auth::STATUS)?;
     let unit = state.mcsv_mgr.lock().await.get_server_unit_status(&id).await?;
 
-    let unit = if let Some(unit) = unit { unit } else { return Err(AppError::Api(ApiError::NotFound)); };
+    let unit = if let Some(unit) = unit { unit } else { return Err(AppError::Api(StatusCode::NOT_FOUND.into())); };
 
     let mut res = Json(json!({}));
     
@@ -165,7 +153,7 @@ pub async fn get_server_log(
     let jb = {
         let mcsv_mgr = state.mcsv_mgr.lock().await;
         let lb = mcsv_mgr.log_broadcasters.get(&id);
-        if let Some(lb) = lb { lb.clone() } else { return Err(AppError::Api(ApiError::NotFound)); }
+        if let Some(lb) = lb { lb.clone() } else { return Err(AppError::Api(StatusCode::NOT_FOUND.into())); }
     };
 
     Ok(Json(Value::Array(jb.get_logs(param.since, param.until, param.max_lines)?
@@ -193,7 +181,7 @@ pub async fn get_server_rlog(
     let jb = {
         let mcsv_mgr = state.mcsv_mgr.lock().await;
         let lb = mcsv_mgr.log_broadcasters.get(&id);
-        if let Some(lb) = lb { lb.clone() } else { return Err(AppError::Api(ApiError::NotFound)); }
+        if let Some(lb) = lb { lb.clone() } else { return Err(AppError::Api(StatusCode::NOT_FOUND.into())); }
     };
 
     Ok(Json(Value::Array(jb.get_rlogs(param.since, param.until, param.max_lines)?
@@ -234,14 +222,14 @@ pub async fn handle_server_action(
         "start" => auth::START,
         "stop" => auth::STOP,
         "restart" => auth::RESTART,
-        _ => return Err(AppError::Api(ApiError::NotFound)),
+        _ => return Err(AppError::Api(StatusCode::NOT_FOUND.into())),
     })?;
     println!("server action {} to {} from {} (jti {})", action, id, auth.0.sub, auth.0.jti);
     let _job_path = match action.as_str() {
         "start" => state.mcsv_mgr.lock().await.start_server(&id).await?,
         "stop" => state.mcsv_mgr.lock().await.stop_server(&id).await?,
         "restart" => state.mcsv_mgr.lock().await.restart_server(&id).await?,
-        _ => return Err(AppError::Api(ApiError::NotFound)),
+        _ => return Err(AppError::Api(StatusCode::NOT_FOUND.into())),
     };
 
     Ok(())
@@ -255,7 +243,7 @@ pub async fn handle_server_console(auth: Auth, Path(id): Path<String>, state: St
     let jb = {
         let mcsv_mgr = state.mcsv_mgr.lock().await;
         let lb = mcsv_mgr.log_broadcasters.get(&id);
-        if let Some(lb) = lb { lb.clone() } else { return Err(AppError::Api(ApiError::NotFound)); }
+        if let Some(lb) = lb { lb.clone() } else { return Err(AppError::Api(StatusCode::NOT_FOUND.into())); }
     };
     // The browser must get its subprotocol echoed back or it drops the socket.
     Ok(ws.protocols([auth::WS_PROTOCOL]).on_upgrade(|s| handle_server_console_socket(s, state, jb, auth.0)))

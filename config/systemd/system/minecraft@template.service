@@ -8,6 +8,7 @@ Requires=minecraft@%i.socket
 Type=simple
 User=mcsv
 Group=mcsv-mgr
+UMask=0002
 
 WorkingDirectory=/srv/minecraft/instances/%i
 
@@ -25,7 +26,7 @@ StandardInput=socket
 StandardOutput=journal
 StandardError=journal
 
-Restart=none
+Restart=no
 
 # CLEAN SHUTDOWN
 ExecStop=/bin/sh -c 'printf "stop\n" > /run/minecraft/%i.stdin'

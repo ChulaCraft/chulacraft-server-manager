@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use axum::{extract::FromRequestParts, http::{HeaderMap, header, request::Parts}};
+use http_unix_client::StatusCode;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 
-use crate::{AppState, handlers::{ApiError, AppError}};
+use crate::{AppState, handlers::AppError};
 
 // Permission bits carried in the token's `permission` claim. Unknown bits are
 // ignored, so the website can grant bits this build doesn't know yet.
@@ -88,7 +89,7 @@ impl Auth {
     }
 
     pub fn require(&self, bits: u32) -> Result<(), AppError> {
-        if self.has(bits) { Ok(()) } else { Err(AppError::Api(ApiError::Forbidden)) }
+        if self.has(bits) { Ok(()) } else { Err(AppError::Api(StatusCode::FORBIDDEN.into())) }
     }
 }
 
@@ -99,7 +100,7 @@ impl FromRequestParts<Arc<AppState>> for Auth {
         token(&parts.headers)
             .and_then(|t| state.jwt.verify(t))
             .map(Auth)
-            .ok_or(AppError::Api(ApiError::Unauthorized))
+            .ok_or(AppError::Api(StatusCode::UNAUTHORIZED.into()))
     }
 }
 
