@@ -22,6 +22,19 @@ Basic setup
 sudo bash scripts/setup.sh
 ```
 
+Auth: every request needs a short-lived EdDSA token signed by chulacraft-web
+(`Authorization: Bearer <jwt>`; the console WebSocket sends it as the second
+subprotocol, `mcsv.jwt, <jwt>`). Put the public key in `/etc/mcsv_manager/env`
+(mode 640, group `mcsv-mgr`); the manager refuses to start without it.
+
+```bash
+MCSV_JWT_PUBLIC_KEY=MCowBQYDK2VwAyEAk93DZfic0O/8MgbLN0Avip9dMXbFjSS9m101UOBAGv8=
+```
+
+The token's `permission` claim is a bitmask: 1 status, 2 logs, 4 console read,
+8 console write, 16 start, 32 stop, 64 restart. `cmd` (JSON body
+`{"command": "..."}`), `start`, `stop` and `restart` are POST.
+
 Minecraft server service template is at [config/systemd/system/minecraft@template.service](config/systemd/system/minecraft@template.service)
 
 \* Further Setup is your own responsibility including instances, Minecraft servers and API.

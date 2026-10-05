@@ -1,10 +1,11 @@
 use axum::{
-    routing::get,
+    routing::{get, post},
     Router
 };
 use std::{os::unix::io::FromRawFd, sync::Arc};
 use tokio::{net::UnixListener, signal::unix::{SignalKind, signal}, sync::Mutex};
 
+mod auth;
 mod handlers;
 mod systemd1;
 mod mcsv_mgr;
@@ -12,10 +13,11 @@ use systemd1::{Systemd1};
 
 use crate::mcsv_mgr::McsvManager;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct AppState {
     pub dbus: Arc<Systemd1>,
-    pub mcsv_mgr: Arc<Mutex<McsvManager>>
+    pub mcsv_mgr: Arc<Mutex<McsvManager>>,
+    pub jwt: auth::Jwt
 }
 
 #[tokio::main]
@@ -23,7 +25,8 @@ async fn main() {
     let dbus = Arc::new(Systemd1::new().await.unwrap());
     let app_state = Arc::new(AppState {
         dbus: dbus.clone(),
-        mcsv_mgr: Arc::new(Mutex::new(McsvManager::new(dbus.clone())))
+        mcsv_mgr: Arc::new(Mutex::new(McsvManager::new(dbus.clone()))),
+        jwt: auth::Jwt::from_env()
     });
 
     let signal_state = app_state.clone();
@@ -34,14 +37,15 @@ async fn main() {
     app_state.mcsv_mgr.lock().await.update().await.unwrap();
 
     let app = Router::new()
-        .route("/status", get(handlers::get_status))
+        .route("/status", get(handlers::get_host_status))
         .route("/servers", get(handlers::list_servers))
         .route("/server/{id}/status", get(handlers::get_server_status))
         .route("/server/{id}/console", get(handlers::handle_server_console))
         .route("/server/{id}/log", get(handlers::get_server_log))
         .route("/server/{id}/rlog", get(handlers::get_server_rlog))
-        .route("/server/{id}/cmd", get(handlers::handle_server_command))
-        .route("/server/{id}/{action}", get(handlers::handle_server_action))
+        // POST, so a link or prefetch can never fire them.
+        .route("/server/{id}/cmd", post(handlers::handle_server_command))
+        .route("/server/{id}/{action}", post(handlers::handle_server_action))
         .with_state(app_state.clone());
 
     let std_listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(0) };
