@@ -12,19 +12,23 @@ use thiserror::Error;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use crate::{AppState, mcsv_mgr::{JournalBroadcaster}};
+use crate::{AppState, auth::{self, Auth, Claims}, mcsv_mgr::{JournalBroadcaster}};
 
 #[derive(Debug)] // Required for the Error trait
 pub enum ApiError {
     NotFound,
-    Invalid
+    Invalid,
+    Unauthorized,
+    Forbidden
 }
 
 impl fmt::Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             ApiError::NotFound => write!(f, "Not found"),
-            ApiError::Invalid => write!(f, "Invalid")
+            ApiError::Invalid => write!(f, "Invalid"),
+            ApiError::Unauthorized => write!(f, "Unauthorized"),
+            ApiError::Forbidden => write!(f, "Forbidden")
         }
     }
 }
@@ -57,7 +61,9 @@ impl IntoResponse for AppError {
             return (
                 match aer {
                     ApiError::NotFound => StatusCode::NOT_FOUND,
-                    ApiError::Invalid => StatusCode::NOT_ACCEPTABLE
+                    ApiError::Invalid => StatusCode::NOT_ACCEPTABLE,
+                    ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
+                    ApiError::Forbidden => StatusCode::FORBIDDEN
                 },
                 "API Error"
             ).into_response();
@@ -93,14 +99,21 @@ pub async fn get_status() -> Json<Value> {
     res
 }
 
-pub async fn list_servers(state: State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+pub async fn get_host_status(auth: Auth) -> Result<Json<Value>, AppError> {
+    auth.require(auth::STATUS)?;
+    Ok(get_status().await)
+}
+
+pub async fn list_servers(auth: Auth, state: State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+    auth.require(auth::STATUS)?;
     let servers = state.mcsv_mgr.lock().await
         .server_names.iter().map(|name| json!(name)).collect();
     
     Ok(Json(Value::Array(servers)))
 }
 
-pub async fn get_server_status(Path(id): Path<String>, state: State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+pub async fn get_server_status(auth: Auth, Path(id): Path<String>, state: State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+    auth.require(auth::STATUS)?;
     let unit = state.mcsv_mgr.lock().await.get_server_unit_status(&id).await?;
 
     let unit = if let Some(unit) = unit { unit } else { return Err(AppError::Api(ApiError::NotFound)); };
@@ -144,9 +157,11 @@ pub struct LogQueryParam {
 }
 
 pub async fn get_server_log(
+    auth: Auth,
     Path(id): Path<String>,
     Query(param): Query<LogQueryParam>,
     state: State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+    auth.require(auth::LOGS)?;
     let jb = {
         let mcsv_mgr = state.mcsv_mgr.lock().await;
         let lb = mcsv_mgr.log_broadcasters.get(&id);
@@ -170,9 +185,11 @@ pub struct RlogQueryParam {
 }
 
 pub async fn get_server_rlog(
+    auth: Auth,
     Path(id): Path<String>,
     Query(param): Query<RlogQueryParam>,
     state: State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+    auth.require(auth::LOGS)?;
     let jb = {
         let mcsv_mgr = state.mcsv_mgr.lock().await;
         let lb = mcsv_mgr.log_broadcasters.get(&id);
@@ -188,28 +205,38 @@ pub async fn get_server_rlog(
         })).collect())))
 }
 
+// In the body, not the query string, so commands stay out of Apache's access log.
 #[derive(serde::Deserialize, Debug)]
-pub struct CommandQueryParam {
-    pub cmd: String
+pub struct CommandBody {
+    pub command: String
 }
 
 pub async fn handle_server_command(
+    auth: Auth,
     Path(id): Path<String>,
-    Query(param): Query<CommandQueryParam>,
-    state: State<Arc<AppState>>) -> Result<(), AppError> {
-    
-    let cmd = param.cmd;
-    println!("Received command for {}: {}", id, cmd);
+    state: State<Arc<AppState>>,
+    Json(body): Json<CommandBody>) -> Result<(), AppError> {
+    auth.require(auth::CONSOLE_WRITE)?;
+
+    let cmd = body.command;
+    println!("Received command for {} from {} (jti {}): {}", id, auth.0.sub, auth.0.jti, cmd);
     let cmd = if !cmd.ends_with('\n') { cmd.to_string() + "\n" } else { cmd.to_string() };
     
     Ok(state.mcsv_mgr.lock().await.inject_command(&id, &cmd).await?)
 }
 
 pub async fn handle_server_action(
+    auth: Auth,
     Path((id, action)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
 ) -> Result<(), AppError> {
-    println!("server action {} to {}", action, id);
+    auth.require(match action.as_str() {
+        "start" => auth::START,
+        "stop" => auth::STOP,
+        "restart" => auth::RESTART,
+        _ => return Err(AppError::Api(ApiError::NotFound)),
+    })?;
+    println!("server action {} to {} from {} (jti {})", action, id, auth.0.sub, auth.0.jti);
     let _job_path = match action.as_str() {
         "start" => state.mcsv_mgr.lock().await.start_server(&id).await?,
         "stop" => state.mcsv_mgr.lock().await.stop_server(&id).await?,
@@ -220,17 +247,27 @@ pub async fn handle_server_action(
     Ok(())
 }
 
-pub async fn handle_server_console(Path(id): Path<String>, state: State<Arc<AppState>>, ws: WebSocketUpgrade) -> Result<impl axum::response::IntoResponse, AppError> {
+// The token is checked once, at upgrade; what the socket may do afterwards
+// comes from the permission bits it carried.
+pub async fn handle_server_console(auth: Auth, Path(id): Path<String>, state: State<Arc<AppState>>, ws: WebSocketUpgrade) -> Result<impl axum::response::IntoResponse, AppError> {
+    auth.require(auth::CONSOLE_READ)?;
     // println!("connecting to {}", id);
     let jb = {
         let mcsv_mgr = state.mcsv_mgr.lock().await;
         let lb = mcsv_mgr.log_broadcasters.get(&id);
         if let Some(lb) = lb { lb.clone() } else { return Err(AppError::Api(ApiError::NotFound)); }
     };
-    Ok(ws.on_upgrade(|s| handle_server_console_socket(s, state, jb)))
+    // The browser must get its subprotocol echoed back or it drops the socket.
+    Ok(ws.protocols([auth::WS_PROTOCOL]).on_upgrade(|s| handle_server_console_socket(s, state, jb, auth.0)))
 }
 
-pub async fn handle_server_console_socket(socket: WebSocket, state: State<Arc<AppState>>, jb: Arc<JournalBroadcaster>) {
+/// Sent instead of acting on a socket message the token has no bit for.
+fn forbidden_message() -> Message {
+    Message::Text(json!({ "type": "error", "message": "Forbidden" }).to_string().into())
+}
+
+pub async fn handle_server_console_socket(socket: WebSocket, state: State<Arc<AppState>>, jb: Arc<JournalBroadcaster>, claims: Claims) {
+    let auth = Auth(claims);
     let (sender, mut receiver) = socket.split();
     let mut rx = jb.tx.subscribe();
     let sender = Arc::new(Mutex::new(sender));
@@ -256,10 +293,21 @@ pub async fn handle_server_console_socket(socket: WebSocket, state: State<Arc<Ap
                 continue;
             };
 
+            let needs = match inmsg.index("type").as_str() {
+                Some("command") => auth::CONSOLE_WRITE,
+                Some("status_global" | "status_mcsv") => auth::STATUS,
+                Some("get_logs" | "get_rlogs") => auth::LOGS,
+                _ => 0
+            };
+            if !auth.has(needs) {
+                if sender.lock().await.send(forbidden_message()).await.is_err() { break; }
+                continue;
+            }
+
             match inmsg.index("type").as_str() {
                 Some("command") => {
                     let cmd = inmsg.index("command").as_str().unwrap_or("");
-                    println!("Received command for {}: {}", name, cmd);
+                    println!("Received command for {} from {} (jti {}): {}", name, auth.0.sub, auth.0.jti, cmd);
                     let cmd = if !cmd.ends_with('\n') { cmd.to_string() + "\n" } else { cmd.to_string() };
                     
                     let res = state.mcsv_mgr.lock().await.inject_command(&name, &cmd).await;
