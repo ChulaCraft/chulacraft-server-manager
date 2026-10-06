@@ -10,8 +10,9 @@ adduser --system --ingroup mcsv-mgr --no-create-home mcsv-mgr
 adduser --system --ingroup mcsv-mgr --no-create-home mcsv
 usermod -aG adm mcsv-mgr
 
-# Allow Apache (www-data) to write to the Unix Socket
-usermod -aG mcsv-mgr www-data
+# Apache (www-data) reaches the 0666 socket without the group, so it must
+# present a JWT; in mcsv-mgr it would skip auth entirely.
+gpasswd -d www-data mcsv-mgr 2>/dev/null || true
 
 mkdir -p /srv/minecraft/{instances,shared}
 chown -R mcsv-mgr:mcsv-mgr /srv/minecraft

@@ -5,7 +5,8 @@ Description=Minecraft Server Manager API socket
 ListenStream=/run/mcsv_manager.sock
 SocketUser=mcsv-mgr
 SocketGroup=mcsv-mgr
-SocketMode=0660
+# World-connectable: the manager itself checks unix groups or a JWT.
+SocketMode=0666
 
 [Install]
 WantedBy=sockets.target

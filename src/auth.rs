@@ -1,9 +1,10 @@
-use std::sync::Arc;
+use std::{ffi::CString, os::fd::{AsRawFd, RawFd}, sync::Arc};
 
-use axum::{extract::FromRequestParts, http::{HeaderMap, header, request::Parts}};
+use axum::{extract::{ConnectInfo, FromRequestParts, connect_info::Connected}, http::{HeaderMap, StatusCode, header, request::Parts}, serve::IncomingStream};
+use tokio::net::{UnixListener, UnixStream};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 
-use crate::{AppState, handlers::{ApiError, AppError}};
+use crate::{AppState, handlers::AppError};
 
 // Permission bits carried in the token's `permission` claim. Unknown bits are
 // ignored, so the website can grant bits this build doesn't know yet.
@@ -18,6 +19,11 @@ pub const RESTART: u32 = 64;
 /// Browsers can't set headers on a WebSocket, so the console sends the token as
 /// the second subprotocol: `Sec-WebSocket-Protocol: mcsv.jwt, <token>`.
 pub const WS_PROTOCOL: &str = "mcsv.jwt";
+
+/// Local callers in any of these groups skip the token: they could reach the
+/// units through systemd anyway. Everyone else (Apache runs as www-data, which
+/// must not be in them) needs a JWT.
+pub const UNIX_GROUPS: [&str; 2] = ["mcsv-mgr", "adm"];
 
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct Claims {
@@ -68,6 +74,60 @@ impl Jwt {
     }
 }
 
+/// Group ids for `UNIX_GROUPS`; groups missing on this host are skipped.
+/// Call once at startup: getgrnam isn't thread-safe.
+pub fn unix_gids() -> Vec<u32> {
+    UNIX_GROUPS.iter().filter_map(|name| {
+        let name = CString::new(*name).ok()?;
+        let group = unsafe { libc::getgrnam(name.as_ptr()) };
+        (!group.is_null()).then(|| unsafe { (*group).gr_gid })
+    }).collect()
+}
+
+/// Who is on the other end of the socket, as the kernel recorded it at
+/// connect(): nothing the client sends can change it.
+#[derive(Clone, Debug)]
+pub struct Peer {
+    pub uid: Option<u32>,
+    pub groups: Vec<u32>,
+}
+
+impl Peer {
+    fn of(stream: &UnixStream) -> Self {
+        let cred = stream.peer_cred().ok();
+        let mut groups = peer_groups(stream.as_raw_fd());
+        groups.extend(cred.map(|c| c.gid()));
+        Peer { uid: cred.map(|c| c.uid()), groups }
+    }
+}
+
+impl Connected<IncomingStream<'_, UnixListener>> for Peer {
+    fn connect_info(stream: IncomingStream<'_, UnixListener>) -> Self {
+        Peer::of(stream.io())
+    }
+}
+
+/// Supplementary groups via SO_PEERGROUPS. More than 256 groups fails closed
+/// (empty list), which just means that caller needs a token.
+fn peer_groups(fd: RawFd) -> Vec<u32> {
+    let mut groups = vec![0 as libc::gid_t; 256];
+    let mut len = (groups.len() * size_of::<libc::gid_t>()) as libc::socklen_t;
+    let ok = unsafe {
+        libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_PEERGROUPS, groups.as_mut_ptr().cast(), &mut len)
+    } == 0;
+    groups.truncate(if ok { len as usize / size_of::<libc::gid_t>() } else { 0 });
+    groups
+}
+
+/// A peer in an allowed group gets every permission, no token needed.
+fn unix_auth(peer: &Peer, gids: &[u32]) -> Option<Auth> {
+    peer.groups.iter().any(|g| gids.contains(g)).then(|| Auth(Claims {
+        sub: format!("uid {}", peer.uid.map_or("?".into(), |u| u.to_string())),
+        jti: "unix".into(),
+        permission: u32::MAX,
+    }))
+}
+
 fn token(headers: &HeaderMap) -> Option<&str> {
     if let Some(value) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
         return value.strip_prefix("Bearer ");
@@ -88,7 +148,7 @@ impl Auth {
     }
 
     pub fn require(&self, bits: u32) -> Result<(), AppError> {
-        if self.has(bits) { Ok(()) } else { Err(AppError::Api(ApiError::Forbidden)) }
+        if self.has(bits) { Ok(()) } else { Err(AppError::Api(StatusCode::FORBIDDEN.into())) }
     }
 }
 
@@ -96,10 +156,14 @@ impl FromRequestParts<Arc<AppState>> for Auth {
     type Rejection = AppError;
 
     async fn from_request_parts(parts: &mut Parts, state: &Arc<AppState>) -> Result<Self, AppError> {
+        // <RequireAny> unix group, JWT </RequireAny>
+        if let Some(auth) = parts.extensions.get::<ConnectInfo<Peer>>().and_then(|ConnectInfo(p)| unix_auth(p, &state.unix_gids)) {
+            return Ok(auth);
+        }
         token(&parts.headers)
             .and_then(|t| state.jwt.verify(t))
             .map(Auth)
-            .ok_or(AppError::Api(ApiError::Unauthorized))
+            .ok_or(AppError::Api(StatusCode::UNAUTHORIZED.into()))
     }
 }
 
@@ -160,6 +224,18 @@ mod tests {
         let token = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjaHVsYWNyYWZ0LXdlYiIsImF1ZCI6Im1jc3YtbWFuYWdlciIsInN1YiI6IktyaXNhbmFwb24iLCJqdGkiOiJ3ZWItMSIsImlhdCI6NDA3MDkwODgwMCwiZXhwIjo0MDcwOTA4ODYwLCJwZXJtaXNzaW9uIjoyMTQ3NDgzNjQ3fQ.PEnqWquAZp_WFYf1FJM_p6TPV1yTAMy2k2w-W0n27vWb-bLCZxFUwdV4nFTolqvjs4WPDxVKBesGNZexJ3syAg";
         let c = jwt().verify(token).unwrap();
         assert_eq!((c.sub.as_str(), c.jti.as_str(), c.permission), ("Krisanapon", "web-1", 2147483647));
+    }
+
+    #[tokio::test]
+    async fn unix_peer_in_an_allowed_group_skips_the_token() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let peer = Peer::of(&a);
+        let me = unsafe { libc::getegid() };
+        assert_eq!(peer.uid, Some(unsafe { libc::geteuid() }));
+        assert!(peer.groups.contains(&me));
+        let auth = unix_auth(&peer, &[me]).unwrap();
+        assert!(auth.has(u32::MAX));
+        assert!(unix_auth(&peer, &[u32::MAX - 1]).is_none());
     }
 
     #[test]

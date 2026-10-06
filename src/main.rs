@@ -17,7 +17,8 @@ use crate::mcsv_mgr::McsvManager;
 pub struct AppState {
     pub dbus: Arc<Systemd1>,
     pub mcsv_mgr: Arc<Mutex<McsvManager>>,
-    pub jwt: auth::Jwt
+    pub jwt: auth::Jwt,
+    pub unix_gids: Vec<u32>
 }
 
 #[tokio::main]
@@ -26,7 +27,8 @@ async fn main() {
     let app_state = Arc::new(AppState {
         dbus: dbus.clone(),
         mcsv_mgr: Arc::new(Mutex::new(McsvManager::new(dbus.clone()))),
-        jwt: auth::Jwt::from_env()
+        jwt: auth::Jwt::from_env(),
+        unix_gids: auth::unix_gids()
     });
 
     let signal_state = app_state.clone();
@@ -56,7 +58,7 @@ async fn main() {
 
     axum::serve(
         listener, 
-        app.into_make_service()
+        app.into_make_service_with_connect_info::<auth::Peer>()
     ).await.unwrap();
 }
 

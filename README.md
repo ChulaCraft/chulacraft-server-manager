@@ -22,9 +22,15 @@ Basic setup
 sudo bash scripts/setup.sh
 ```
 
-Auth: every request needs a short-lived EdDSA token signed by chulacraft-web
-(`Authorization: Bearer <jwt>`; the console WebSocket sends it as the second
-subprotocol, `mcsv.jwt, <jwt>`). Put the public key in `/etc/mcsv_manager/env`
+Auth: the socket is mode 0666, and a request passes if either
+- the connecting process is in group `mcsv-mgr` or `adm` (checked with the
+  kernel's peer credentials, so the CLI tools in `src/bin` need no token), or
+- it carries a short-lived EdDSA token signed by chulacraft-web
+  (`Authorization: Bearer <jwt>`; the console WebSocket sends it as the second
+  subprotocol, `mcsv.jwt, <jwt>`).
+
+Apache runs as `www-data`, which must not be in `mcsv-mgr` (setup.sh removes
+it), so web traffic always needs the token. Put the public key in `/etc/mcsv_manager/env`
 (mode 640, group `mcsv-mgr`); the manager refuses to start without it.
 
 ```bash
