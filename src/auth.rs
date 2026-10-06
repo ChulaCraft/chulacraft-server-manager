@@ -25,6 +25,10 @@ pub const WS_PROTOCOL: &str = "mcsv.jwt";
 /// must not be in them) needs a JWT.
 pub const UNIX_GROUPS: [&str; 2] = ["mcsv-mgr", "adm"];
 
+/// The game servers run as this user, which is also in mcsv-mgr. A plugin must
+/// not be able to drive the manager, so it never gets the unix shortcut.
+pub const GAME_USER: &str = "mcsv";
+
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct Claims {
     pub sub: String,
@@ -84,6 +88,13 @@ pub fn unix_gids() -> Vec<u32> {
     }).collect()
 }
 
+/// Uid of `GAME_USER`, if it exists. Same startup-only rule as `unix_gids`.
+pub fn game_uid() -> Option<u32> {
+    let name = CString::new(GAME_USER).ok()?;
+    let user = unsafe { libc::getpwnam(name.as_ptr()) };
+    (!user.is_null()).then(|| unsafe { (*user).pw_uid })
+}
+
 /// Who is on the other end of the socket, as the kernel recorded it at
 /// connect(): nothing the client sends can change it.
 #[derive(Clone, Debug)]
@@ -120,9 +131,10 @@ fn peer_groups(fd: RawFd) -> Vec<u32> {
 }
 
 /// A peer in an allowed group gets every permission, no token needed.
-fn unix_auth(peer: &Peer, gids: &[u32]) -> Option<Auth> {
+fn unix_auth(peer: &Peer, gids: &[u32], game_uid: Option<u32>) -> Option<Auth> {
+    let uid = peer.uid.filter(|&u| Some(u) != game_uid)?;
     peer.groups.iter().any(|g| gids.contains(g)).then(|| Auth(Claims {
-        sub: format!("uid {}", peer.uid.map_or("?".into(), |u| u.to_string())),
+        sub: format!("uid {uid}"),
         jti: "unix".into(),
         permission: u32::MAX,
     }))
@@ -157,7 +169,7 @@ impl FromRequestParts<Arc<AppState>> for Auth {
 
     async fn from_request_parts(parts: &mut Parts, state: &Arc<AppState>) -> Result<Self, AppError> {
         // <RequireAny> unix group, JWT </RequireAny>
-        if let Some(auth) = parts.extensions.get::<ConnectInfo<Peer>>().and_then(|ConnectInfo(p)| unix_auth(p, &state.unix_gids)) {
+        if let Some(auth) = parts.extensions.get::<ConnectInfo<Peer>>().and_then(|ConnectInfo(p)| unix_auth(p, &state.unix_gids, state.game_uid)) {
             return Ok(auth);
         }
         token(&parts.headers)
@@ -233,9 +245,11 @@ mod tests {
         let me = unsafe { libc::getegid() };
         assert_eq!(peer.uid, Some(unsafe { libc::geteuid() }));
         assert!(peer.groups.contains(&me));
-        let auth = unix_auth(&peer, &[me]).unwrap();
+        let auth = unix_auth(&peer, &[me], None).unwrap();
         assert!(auth.has(u32::MAX));
-        assert!(unix_auth(&peer, &[u32::MAX - 1]).is_none());
+        assert!(unix_auth(&peer, &[u32::MAX - 1], None).is_none());
+        // The game-server account never skips the token, whatever its groups.
+        assert!(unix_auth(&peer, &[me], peer.uid).is_none());
     }
 
     #[test]

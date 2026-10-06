@@ -23,8 +23,9 @@ sudo bash scripts/setup.sh
 ```
 
 Auth: the socket is mode 0666, and a request passes if either
-- the connecting process is in group `mcsv-mgr` or `adm` (checked with the
-  kernel's peer credentials, so the CLI tools in `src/bin` need no token), or
+- the connecting process is in group `mcsv-mgr` or `adm` and is not the
+  game-server user `mcsv` (checked with the kernel's peer credentials, so the
+  CLI tools in `src/bin` need no token), or
 - it carries a short-lived EdDSA token signed by chulacraft-web
   (`Authorization: Bearer <jwt>`; the console WebSocket sends it as the second
   subprotocol, `mcsv.jwt, <jwt>`).

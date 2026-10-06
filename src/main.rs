@@ -18,7 +18,8 @@ pub struct AppState {
     pub dbus: Arc<Systemd1>,
     pub mcsv_mgr: Arc<Mutex<McsvManager>>,
     pub jwt: auth::Jwt,
-    pub unix_gids: Vec<u32>
+    pub unix_gids: Vec<u32>,
+    pub game_uid: Option<u32>
 }
 
 #[tokio::main]
@@ -28,7 +29,8 @@ async fn main() {
         dbus: dbus.clone(),
         mcsv_mgr: Arc::new(Mutex::new(McsvManager::new(dbus.clone()))),
         jwt: auth::Jwt::from_env(),
-        unix_gids: auth::unix_gids()
+        unix_gids: auth::unix_gids(),
+        game_uid: auth::game_uid()
     });
 
     let signal_state = app_state.clone();
