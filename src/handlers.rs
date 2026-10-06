@@ -10,7 +10,7 @@ use thiserror::Error;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use crate::{AppState, auth::{self, Auth, Claims}, mcsv_mgr::{JournalBroadcaster}};
+use crate::{AppState, auth::{self, Auth}, mcsv_mgr::{JournalBroadcaster}};
 
 #[derive(Debug)] // Required for the Error trait
 pub struct ApiError (StatusCode);
@@ -207,7 +207,11 @@ pub async fn handle_server_command(
     auth.require(auth::CONSOLE_WRITE)?;
 
     let cmd = body.command;
-    println!("Received command for {} from {} (jti {}): {}", id, auth.0.sub, auth.0.jti, cmd);
+    if let Auth::Claims(c) = &auth {
+        println!("Received command for {} from {} (jti {}): {}", id, c.sub, c.jti, cmd);
+    } else {
+        println!("Received command for {}: {}", id, cmd);
+    }
     let cmd = if !cmd.ends_with('\n') { cmd.to_string() + "\n" } else { cmd.to_string() };
     
     Ok(state.mcsv_mgr.lock().await.inject_command(&id, &cmd).await?)
@@ -224,7 +228,11 @@ pub async fn handle_server_action(
         "restart" => auth::RESTART,
         _ => return Err(AppError::Api(StatusCode::NOT_FOUND.into())),
     })?;
-    println!("server action {} to {} from {} (jti {})", action, id, auth.0.sub, auth.0.jti);
+    if let Auth::Claims(c) = &auth {
+    println!("server action {} to {} from {} (jti {})", action, id, c.sub, c.jti);
+    } else {
+    println!("server action {} to {}", action, id);
+    }
     let _job_path = match action.as_str() {
         "start" => state.mcsv_mgr.lock().await.start_server(&id).await?,
         "stop" => state.mcsv_mgr.lock().await.stop_server(&id).await?,
@@ -246,7 +254,7 @@ pub async fn handle_server_console(auth: Auth, Path(id): Path<String>, state: St
         if let Some(lb) = lb { lb.clone() } else { return Err(AppError::Api(StatusCode::NOT_FOUND.into())); }
     };
     // The browser must get its subprotocol echoed back or it drops the socket.
-    Ok(ws.protocols([auth::WS_PROTOCOL]).on_upgrade(|s| handle_server_console_socket(s, state, jb, auth.0)))
+    Ok(ws.protocols([auth::WS_PROTOCOL]).on_upgrade(|s| handle_server_console_socket(s, state, jb, auth)))
 }
 
 /// Sent instead of acting on a socket message the token has no bit for.
@@ -254,8 +262,7 @@ fn forbidden_message() -> Message {
     Message::Text(json!({ "type": "error", "message": "Forbidden" }).to_string().into())
 }
 
-pub async fn handle_server_console_socket(socket: WebSocket, state: State<Arc<AppState>>, jb: Arc<JournalBroadcaster>, claims: Claims) {
-    let auth = Auth(claims);
+pub async fn handle_server_console_socket(socket: WebSocket, state: State<Arc<AppState>>, jb: Arc<JournalBroadcaster>, auth: Auth) {
     let (sender, mut receiver) = socket.split();
     let mut rx = jb.tx.subscribe();
     let sender = Arc::new(Mutex::new(sender));
@@ -295,7 +302,11 @@ pub async fn handle_server_console_socket(socket: WebSocket, state: State<Arc<Ap
             match inmsg.index("type").as_str() {
                 Some("command") => {
                     let cmd = inmsg.index("command").as_str().unwrap_or("");
-                    println!("Received command for {} from {} (jti {}): {}", name, auth.0.sub, auth.0.jti, cmd);
+                    if let Auth::Claims(c) = &auth {
+                        println!("Received command for {} from {} (jti {}): {}", name, c.sub, c.jti, cmd);
+                    } else {
+                        println!("Received command for {}: {}", name, cmd);
+                    }
                     let cmd = if !cmd.ends_with('\n') { cmd.to_string() + "\n" } else { cmd.to_string() };
                     
                     let res = state.mcsv_mgr.lock().await.inject_command(&name, &cmd).await;

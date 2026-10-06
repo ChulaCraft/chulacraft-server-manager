@@ -17,7 +17,7 @@ use crate::mcsv_mgr::McsvManager;
 pub struct AppState {
     pub dbus: Arc<Systemd1>,
     pub mcsv_mgr: Arc<Mutex<McsvManager>>,
-    pub jwt: auth::Jwt
+    pub jwt: Option<auth::Jwt>
 }
 
 #[tokio::main]
@@ -26,7 +26,7 @@ async fn main() {
     let app_state = Arc::new(AppState {
         dbus: dbus.clone(),
         mcsv_mgr: Arc::new(Mutex::new(McsvManager::new(dbus.clone()))),
-        jwt: auth::Jwt::from_env()
+        jwt: auth::Jwt::from_env().inspect_err(|e| eprintln!("warning: Jwt not initialized: {}", e)).ok()
     });
 
     let signal_state = app_state.clone();

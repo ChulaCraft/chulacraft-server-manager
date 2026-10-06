@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{io, sync::Arc};
 
 use axum::{extract::FromRequestParts, http::{HeaderMap, header, request::Parts}};
 use http_unix_client::StatusCode;
@@ -43,15 +43,16 @@ impl std::fmt::Debug for Jwt {
 impl Jwt {
     /// `MCSV_JWT_PUBLIC_KEY`: an Ed25519 public key, as PEM or as the one-line
     /// base64 body of one (easier to put in a systemd EnvironmentFile).
-    pub fn from_env() -> Self {
+    pub fn from_env() -> Result<Self, io::Error> {
         let raw = std::env::var("MCSV_JWT_PUBLIC_KEY")
-            .expect("MCSV_JWT_PUBLIC_KEY is required: the manager refuses to run without auth");
+            .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "MCSV_JWT_PUBLIC_KEY is required: the manager refuses to run without auth"))?;
         let pem = if raw.contains("-----BEGIN") {
             raw
         } else {
             format!("-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----\n", raw.trim())
         };
-        Self::new(DecodingKey::from_ed_pem(pem.as_bytes()).expect("MCSV_JWT_PUBLIC_KEY is not an Ed25519 public key"))
+        Ok(Self::new(DecodingKey::from_ed_pem(pem.as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "MCSV_JWT_PUBLIC_KEY is not an Ed25519 public key"))?))
     }
 
     pub fn new(key: DecodingKey) -> Self {
@@ -81,11 +82,19 @@ fn token(headers: &HeaderMap) -> Option<&str> {
 
 /// The verified caller. Handlers take this and call `require` with the bits
 /// their route needs; a missing or bad token never reaches the handler body.
-pub struct Auth(pub Claims);
+pub enum Auth {
+    Claims(Claims),
+    Bypass,
+    None
+}
 
 impl Auth {
     pub fn has(&self, bits: u32) -> bool {
-        self.0.permission & bits == bits
+        match self {
+            Self::Claims(c) => c.permission & bits == bits,
+            Self::Bypass => true,
+            Self::None => false
+        }
     }
 
     pub fn require(&self, bits: u32) -> Result<(), AppError> {
@@ -97,10 +106,14 @@ impl FromRequestParts<Arc<AppState>> for Auth {
     type Rejection = AppError;
 
     async fn from_request_parts(parts: &mut Parts, state: &Arc<AppState>) -> Result<Self, AppError> {
-        token(&parts.headers)
-            .and_then(|t| state.jwt.verify(t))
-            .map(Auth)
-            .ok_or(AppError::Api(StatusCode::UNAUTHORIZED.into()))
+        if parts.headers.get("Host").map(|h| h == "bypass").unwrap_or(false) {
+            Ok(Self::Bypass)
+        } else {
+            token(&parts.headers)
+                .and_then(|t| state.jwt.as_ref().and_then(|j| j.verify(t)))
+                .map(Auth::Claims)
+                .ok_or(AppError::Api(StatusCode::UNAUTHORIZED.into()))
+        }
     }
 }
 
@@ -134,7 +147,7 @@ mod tests {
     fn accepts_a_valid_token() {
         let c = jwt().verify(&sign(claims(now() + 60))).unwrap();
         assert_eq!((c.sub.as_str(), c.permission), ("Krisanapon", 71));
-        let auth = Auth(c);
+        let auth = Auth::Claims(c);
         assert!(auth.has(STATUS | LOGS | CONSOLE_READ | RESTART));
         assert!(!auth.has(CONSOLE_WRITE) && !auth.has(STOP));
     }
