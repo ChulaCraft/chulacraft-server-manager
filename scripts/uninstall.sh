@@ -22,7 +22,7 @@ systemctl daemon-reload
 
 if REMOVE_EVERYTHING; then
 
-rm -rf /srv/minecraft/
+rm -rf /etc/mcsv_manager/ /srv/minecraft/
 deluser --system mcsv-mgr
 deluser --system mcsv
 delgroup --system mcsv-mgr

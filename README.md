@@ -22,14 +22,11 @@ Basic setup
 sudo bash scripts/setup.sh
 ```
 
-Auth: every request needs a short-lived EdDSA token signed by chulacraft-web
+Authentication: local service can set host to `bypass` to skip jwt authentication.
+For reverse proxy, a short-lived EdDSA token must be signed by trusted service 
 (`Authorization: Bearer <jwt>`; the console WebSocket sends it as the second
-subprotocol, `mcsv.jwt, <jwt>`). Put the public key in `/etc/mcsv_manager/env`
-(mode 640, group `mcsv-mgr`); the manager refuses to start without it.
-
-```bash
-MCSV_JWT_PUBLIC_KEY=MCowBQYDK2VwAyEAk93DZfic0O/8MgbLN0Avip9dMXbFjSS9m101UOBAGv8=
-```
+subprotocol, `mcsv.jwt, <jwt>`).
+The config can be found inside `/etc/mcsv_manager/`.
 
 The token's `permission` claim is a bitmask: 1 status, 2 logs, 4 console read,
 8 console write, 16 start, 32 stop, 64 restart. `cmd` (JSON body
@@ -41,7 +38,7 @@ Minecraft server service template is at [config/systemd/system/minecraft@templat
 
 ## Contributing
 
-Pull requests will be welcome soon. For major changes, please open an issue first to discuss what you would like to change.
+Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
 
 ## License
 
