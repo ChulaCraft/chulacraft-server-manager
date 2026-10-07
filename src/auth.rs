@@ -1,30 +1,45 @@
-use std::{io, sync::Arc};
+use std::{ffi::CString, io, os::fd::{AsRawFd, RawFd}, sync::Arc};
 
-use axum::{extract::FromRequestParts, http::{HeaderMap, header, request::Parts}};
+use axum::{extract::{ConnectInfo, FromRequestParts, connect_info::Connected}, http::{HeaderMap, header, request::Parts}, serve::IncomingStream};
 use http_unix_client::StatusCode;
+use tokio::net::{UnixListener, UnixStream};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 
 use crate::{AppState, handlers::AppError};
 
+pub type PermissionBits = u32;
+
 // Permission bits carried in the token's `permission` claim. Unknown bits are
 // ignored, so the website can grant bits this build doesn't know yet.
-pub const STATUS: u32 = 1;
-pub const LOGS: u32 = 2;
-pub const CONSOLE_READ: u32 = 4;
-pub const CONSOLE_WRITE: u32 = 8;
-pub const START: u32 = 16;
-pub const STOP: u32 = 32;
-pub const RESTART: u32 = 64;
+pub const STATUS: PermissionBits = 1;
+pub const LOGS: PermissionBits = 2;
+pub const CONSOLE_READ: PermissionBits = 4;
+pub const CONSOLE_WRITE: PermissionBits = 8;
+pub const START: PermissionBits = 16;
+pub const STOP: PermissionBits = 32;
+pub const RESTART: PermissionBits = 64;
 
 /// Browsers can't set headers on a WebSocket, so the console sends the token as
 /// the second subprotocol: `Sec-WebSocket-Protocol: mcsv.jwt, <token>`.
 pub const WS_PROTOCOL: &str = "mcsv.jwt";
 
+/// Local callers in any of these groups skip the token: they could reach the
+/// units through systemd anyway. Everyone else (Apache runs as www-data, which
+/// must not be in them) needs a JWT.
+pub const UNIX_GROUPS: [(&str, PermissionBits); 2] = [
+    ("mcsv-mgr", u32::MAX),
+    ("adm", STATUS | LOGS | CONSOLE_READ)
+];
+
+/// The game servers run as this user, which is also in mcsv-mgr. A plugin must
+/// not be able to drive the manager, so it never gets the unix shortcut.
+pub const GAME_USER: &str = "mcsv";
+
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct Claims {
     pub sub: String,
     pub jti: String,
-    pub permission: u32,
+    pub permission: PermissionBits,
 }
 
 /// Verifies tokens minted by chulacraft-web. Only the public key lives here, so
@@ -70,6 +85,71 @@ impl Jwt {
     }
 }
 
+/// Group ids for `UNIX_GROUPS`; groups missing on this host are skipped.
+/// Call once at startup: getgrnam isn't thread-safe.
+pub fn unix_gids() -> Vec<(u32, PermissionBits)> {
+    UNIX_GROUPS.iter().filter_map(|(name, perm)| {
+        let name = CString::new(*name).ok()?;
+        let group = unsafe { libc::getgrnam(name.as_ptr()) };
+        (!group.is_null()).then(|| unsafe { ((*group).gr_gid, *perm) })
+    }).collect()
+}
+
+/// Uid of `GAME_USER`, if it exists. Same startup-only rule as `unix_gids`.
+pub fn game_uid() -> Option<u32> {
+    let name = CString::new(GAME_USER).ok()?;
+    let user = unsafe { libc::getpwnam(name.as_ptr()) };
+    (!user.is_null()).then(|| unsafe { (*user).pw_uid })
+}
+
+/// Who is on the other end of the socket, as the kernel recorded it at
+/// connect(): nothing the client sends can change it.
+#[derive(Clone, Debug)]
+pub struct Peer {
+    pub uid: Option<u32>,
+    pub groups: Vec<u32>,
+}
+
+impl Peer {
+    fn of(stream: &UnixStream) -> Self {
+        let cred = stream.peer_cred().ok();
+        let mut groups = peer_groups(stream.as_raw_fd());
+        groups.extend(cred.map(|c| c.gid()));
+        Peer { uid: cred.map(|c| c.uid()), groups }
+    }
+}
+
+impl Connected<IncomingStream<'_, UnixListener>> for Peer {
+    fn connect_info(stream: IncomingStream<'_, UnixListener>) -> Self {
+        Peer::of(stream.io())
+    }
+}
+
+/// Supplementary groups via SO_PEERGROUPS. More than 256 groups fails closed
+/// (empty list), which just means that caller needs a token.
+fn peer_groups(fd: RawFd) -> Vec<u32> {
+    let mut groups = vec![0 as libc::gid_t; 256];
+    let mut len = (groups.len() * size_of::<libc::gid_t>()) as libc::socklen_t;
+    let ok = unsafe {
+        libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_PEERGROUPS, groups.as_mut_ptr().cast(), &mut len)
+    } == 0;
+    groups.truncate(if ok { len as usize / size_of::<libc::gid_t>() } else { 0 });
+    groups
+}
+
+/// A peer in an allowed group gets every permission, no token needed.
+fn unix_auth(peer: &Peer, gids: &[(u32, PermissionBits)], game_uid: Option<u32>) -> Option<Auth> {
+    let uid = peer.uid.filter(|&u| Some(u) != game_uid)?;
+    let perm = gids.iter().fold(0u32, |acc, (g, p)|
+        (if peer.groups.contains(g) { *p } else { 0u32 }) + acc
+    );
+    Some(Auth::Claims(Claims {
+        sub: format!("uid {uid}"),
+        jti: "unix".into(),
+        permission: perm,
+    }))
+}
+
 fn token(headers: &HeaderMap) -> Option<&str> {
     if let Some(value) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
         return value.strip_prefix("Bearer ");
@@ -89,7 +169,7 @@ pub enum Auth {
 }
 
 impl Auth {
-    pub fn has(&self, bits: u32) -> bool {
+    pub fn has(&self, bits: PermissionBits) -> bool {
         match self {
             Self::Claims(c) => c.permission & bits == bits,
             Self::Bypass => true,
@@ -97,8 +177,16 @@ impl Auth {
         }
     }
 
-    pub fn require(&self, bits: u32) -> Result<(), AppError> {
+    pub fn require(&self, bits: PermissionBits) -> Result<(), AppError> {
         if self.has(bits) { Ok(()) } else { Err(AppError::Api(StatusCode::FORBIDDEN.into())) }
+    }
+    
+    pub fn get_permission(&self) -> PermissionBits {
+        match self {
+            Self::Claims(c) => c.permission,
+            Self::Bypass => u32::MAX,
+            Self::None => 0
+        }
     }
 }
 
@@ -106,14 +194,12 @@ impl FromRequestParts<Arc<AppState>> for Auth {
     type Rejection = AppError;
 
     async fn from_request_parts(parts: &mut Parts, state: &Arc<AppState>) -> Result<Self, AppError> {
-        if parts.headers.get("Host").map(|h| h == "bypass").unwrap_or(false) {
-            Ok(Self::Bypass)
-        } else {
-            token(&parts.headers)
-                .and_then(|t| state.jwt.as_ref().and_then(|j| j.verify(t)))
-                .map(Auth::Claims)
-                .ok_or(AppError::Api(StatusCode::UNAUTHORIZED.into()))
+        if let Some(auth) = parts.extensions.get::<ConnectInfo<Peer>>().and_then(|ConnectInfo(p)| unix_auth(p, &state.unix_gids, state.game_uid)) {
+            return Ok(auth);
         }
+        Ok(token(&parts.headers)
+            .and_then(|t| state.jwt.as_ref().and_then(|j| j.verify(t)))
+            .map(Auth::Claims).unwrap_or(Self::None))
     }
 }
 
@@ -174,6 +260,20 @@ mod tests {
         let token = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjaHVsYWNyYWZ0LXdlYiIsImF1ZCI6Im1jc3YtbWFuYWdlciIsInN1YiI6IktyaXNhbmFwb24iLCJqdGkiOiJ3ZWItMSIsImlhdCI6NDA3MDkwODgwMCwiZXhwIjo0MDcwOTA4ODYwLCJwZXJtaXNzaW9uIjoyMTQ3NDgzNjQ3fQ.PEnqWquAZp_WFYf1FJM_p6TPV1yTAMy2k2w-W0n27vWb-bLCZxFUwdV4nFTolqvjs4WPDxVKBesGNZexJ3syAg";
         let c = jwt().verify(token).unwrap();
         assert_eq!((c.sub.as_str(), c.jti.as_str(), c.permission), ("Krisanapon", "web-1", 2147483647));
+    }
+
+    #[tokio::test]
+    async fn unix_peer_in_an_allowed_group_skips_the_token() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let peer = Peer::of(&a);
+        let me = unsafe { libc::getegid() };
+        assert_eq!(peer.uid, Some(unsafe { libc::geteuid() }));
+        assert!(peer.groups.contains(&me));
+        let auth = unix_auth(&peer, &[(me, u32::MAX)], None).unwrap();
+        assert!(auth.has(u32::MAX));
+        assert!(unix_auth(&peer, &[(u32::MAX - 1, 0)], None).unwrap().get_permission() == 0);
+        // The game-server account never skips the token, whatever its groups.
+        assert!(unix_auth(&peer, &[(me, u32::MAX)], peer.uid).unwrap().get_permission() == 0);
     }
 
     #[test]

@@ -92,7 +92,10 @@ pub async fn get_host_status(auth: Auth) -> Result<Json<Value>, AppError> {
     Ok(get_status().await)
 }
 
-pub async fn list_servers(auth: Auth, state: State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+pub async fn list_servers(
+    auth: Auth,
+    State(state): State<Arc<AppState>>
+) -> Result<Json<Value>, AppError> {
     auth.require(auth::STATUS)?;
     let servers = state.mcsv_mgr.lock().await
         .server_names.iter().map(|name| json!(name)).collect();
@@ -100,7 +103,11 @@ pub async fn list_servers(auth: Auth, state: State<Arc<AppState>>) -> Result<Jso
     Ok(Json(Value::Array(servers)))
 }
 
-pub async fn get_server_status(auth: Auth, Path(id): Path<String>, state: State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+pub async fn get_server_status(
+    auth: Auth,
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>
+) -> Result<Json<Value>, AppError> {
     auth.require(auth::STATUS)?;
     let unit = state.mcsv_mgr.lock().await.get_server_unit_status(&id).await?;
 
@@ -176,7 +183,7 @@ pub async fn get_server_rlog(
     auth: Auth,
     Path(id): Path<String>,
     Query(param): Query<RlogQueryParam>,
-    state: State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
+    State(state): State<Arc<AppState>>) -> Result<Json<Value>, AppError> {
     auth.require(auth::LOGS)?;
     let jb = {
         let mcsv_mgr = state.mcsv_mgr.lock().await;
@@ -202,7 +209,7 @@ pub struct CommandBody {
 pub async fn handle_server_command(
     auth: Auth,
     Path(id): Path<String>,
-    state: State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Json(body): Json<CommandBody>) -> Result<(), AppError> {
     auth.require(auth::CONSOLE_WRITE)?;
 

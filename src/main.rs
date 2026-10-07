@@ -17,7 +17,9 @@ use crate::mcsv_mgr::McsvManager;
 pub struct AppState {
     pub dbus: Arc<Systemd1>,
     pub mcsv_mgr: Arc<Mutex<McsvManager>>,
-    pub jwt: Option<auth::Jwt>
+    pub jwt: Option<auth::Jwt>,
+    pub unix_gids: Vec<(u32, auth::PermissionBits)>,
+    pub game_uid: Option<u32>
 }
 
 #[tokio::main]
@@ -26,7 +28,9 @@ async fn main() {
     let app_state = Arc::new(AppState {
         dbus: dbus.clone(),
         mcsv_mgr: Arc::new(Mutex::new(McsvManager::new(dbus.clone()))),
-        jwt: auth::Jwt::from_env().inspect_err(|e| eprintln!("warning: Jwt not initialized: {}", e)).ok()
+        jwt: auth::Jwt::from_env().inspect_err(|e| eprintln!("warning: Jwt not initialized: {}", e)).ok(),
+        unix_gids: auth::unix_gids(),
+        game_uid: auth::game_uid()
     });
 
     let signal_state = app_state.clone();
@@ -56,7 +60,7 @@ async fn main() {
 
     axum::serve(
         listener, 
-        app.into_make_service()
+        app.into_make_service_with_connect_info::<auth::Peer>()
     ).await.unwrap();
 }
 

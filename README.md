@@ -22,11 +22,21 @@ Basic setup
 sudo bash scripts/setup.sh
 ```
 
-Authentication: local service can set host to `bypass` to skip jwt authentication.
-For reverse proxy, a short-lived EdDSA token must be signed by trusted service 
-(`Authorization: Bearer <jwt>`; the console WebSocket sends it as the second
-subprotocol, `mcsv.jwt, <jwt>`).
-The config can be found inside `/etc/mcsv_manager/`.
+Auth: the socket is mode 0666, and a request passes if either
+- the connecting process is in group `mcsv-mgr` or `adm` and is not the
+  game-server user `mcsv` (checked with the kernel's peer credentials, so the
+  CLI tools in `src/bin` need no token), or
+- it carries a short-lived EdDSA token signed by chulacraft-web
+  (`Authorization: Bearer <jwt>`; the console WebSocket sends it as the second
+  subprotocol, `mcsv.jwt, <jwt>`).
+
+Apache runs as `www-data`, which must not be in `mcsv-mgr` (setup.sh removes
+it), so web traffic always needs the token. Put the public key in `/etc/mcsv_manager/env`
+(mode 640, group `mcsv-mgr`); the manager refuses to start without it.
+
+```bash
+MCSV_JWT_PUBLIC_KEY=MCowBQYDK2VwAyEAk93DZfic0O/8MgbLN0Avip9dMXbFjSS9m101UOBAGv8=
+```
 
 The token's `permission` claim is a bitmask: 1 status, 2 logs, 4 console read,
 8 console write, 16 start, 32 stop, 64 restart. `cmd` (JSON body

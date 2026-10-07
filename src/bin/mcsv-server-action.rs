@@ -52,7 +52,6 @@ async fn main() -> Result<(), String> {
     
     let response = client
         .post(args.socket, &format!("/server/{}/{}", args.server_id, args.action.to_string()))
-        .header("Host", "bypass")
         .send()
         .await.map_err(|e| e.to_string())?;
     Err(match response.status() {
