@@ -10,7 +10,7 @@ use thiserror::Error;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use crate::{AppState, auth::{self, Auth}, mcsv_mgr::{JournalBroadcaster}};
+use crate::{AppState, auth::{self, Auth}, mcsv_mgr::JournalBroadcaster, models::ServerStatus};
 
 #[derive(Debug)] // Required for the Error trait
 pub struct ApiError (StatusCode);
@@ -107,41 +107,21 @@ pub async fn get_server_status(
     auth: Auth,
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>
-) -> Result<Json<Value>, AppError> {
+) -> Result<Json<ServerStatus>, AppError> {
     auth.require(auth::STATUS)?;
     let unit = state.mcsv_mgr.lock().await.get_server_unit_status(&id).await?;
 
     let unit = if let Some(unit) = unit { unit } else { return Err(AppError::Api(StatusCode::NOT_FOUND.into())); };
 
-    let mut res = Json(json!({}));
-    
-    *res.index_mut("unit") = json!({
-        "name": unit.name,
-        "load_state": unit.load_state,
-        "active_state": unit.active_state,
-        "sub_state": unit.sub_state
-    });
+    let mut res = ServerStatus::from(unit);
 
     let proc = state.mcsv_mgr.lock().await.get_server_process(&id).await;
     
     if let Ok(Some(proc)) = proc {
-        *res.index_mut("stat") = json!({
-            "pid": proc.pid
-        });
-        let mut system = System::new_with_specifics(RefreshKind::nothing()
-                .with_processes(ProcessRefreshKind::everything()));
-        system.refresh_all();
-        if let Some(proc) = system.process(Pid::from_u32(proc.pid)) {
-            let stat = res.index_mut("stat");
-            *stat.index_mut("name") = Value::String(proc.name().to_string_lossy().into_owned());
-            *stat.index_mut("cpu_usage") = json!(proc.cpu_usage());
-            *stat.index_mut("memory") = json!(proc.memory());
-            *stat.index_mut("start_time") = json!(proc.start_time());
-            *stat.index_mut("run_time") = json!(proc.run_time());
-        }
+        res.stat = (&proc).try_into().ok();
     }
 
-    Ok(res)
+    Ok(Json(res))
 }
 
 #[derive(serde::Deserialize, Debug)]

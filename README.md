@@ -12,7 +12,7 @@ cargo build --release
 Installation
 - install the binary
 ```bash
-sudo install -m 755 target/release/mcsv_manager /usr/local/bin/mcsv_manager
+sudo bash scripts/install.sh
 ```
 
 Basic setup

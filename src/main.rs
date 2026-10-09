@@ -9,6 +9,7 @@ mod auth;
 mod handlers;
 mod systemd1;
 mod mcsv_mgr;
+mod models;
 use systemd1::{Systemd1};
 
 use crate::mcsv_mgr::McsvManager;
