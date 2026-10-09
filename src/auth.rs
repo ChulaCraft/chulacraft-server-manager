@@ -140,6 +140,12 @@ fn peer_groups(fd: RawFd) -> Vec<u32> {
 /// A peer in an allowed group gets every permission, no token needed.
 fn unix_auth(peer: &Peer, gids: &[(u32, PermissionBits)], game_uid: Option<u32>) -> Option<Auth> {
     let uid = peer.uid.filter(|&u| Some(u) != game_uid)?;
+
+    // root gain full control
+    if uid == 0 {
+        return Some(Auth::Bypass);
+    }
+
     let perm = gids.iter().fold(0u32, |acc, (g, p)|
         (if peer.groups.contains(g) { *p } else { 0u32 }) + acc
     );
