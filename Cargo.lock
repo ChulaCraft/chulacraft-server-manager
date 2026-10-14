@@ -374,6 +374,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "chrono-english"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01f13833384af0b2e8d3dbba6d611a2b9ee3ced8b141fcb5d932706d63b5680e"
+dependencies = [
+ "chrono",
+ "scanlex",
+]
+
+[[package]]
 name = "clap"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1361,6 +1371,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chrono",
+ "chrono-english",
  "clap",
  "futures-util",
  "http_unix_client",
@@ -1882,6 +1893,12 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "scanlex"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d1ccd92ba75bf41b8f357c0ed1c74c64d6361a3b22303872d89197cda291e42"
 
 [[package]]
 name = "scopeguard"
