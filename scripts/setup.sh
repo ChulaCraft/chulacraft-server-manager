@@ -10,7 +10,7 @@ adduser --system --ingroup mcsv-mgr --no-create-home mcsv-mgr
 adduser --system --ingroup mcsv-mgr --no-create-home mcsv
 usermod -aG adm mcsv-mgr
 
-mkdir -p /srv/minecraft/{instances,shared}
+mkdir -p /srv/minecraft/instances /srv/minecraft/shared
 chown -R mcsv-mgr:mcsv-mgr /srv/minecraft
 chmod -R 2775 /srv/minecraft
 

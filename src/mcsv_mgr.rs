@@ -79,7 +79,7 @@ impl JournalBroadcaster {
         Arc::new(Self { unit_name,  name, tx: c_tx, handle })
     }
 
-    pub fn get_logs(self: &Self, since: u64, until: Option<u64>, max_lines: Option<u64>) -> Result<Vec<LogLine>, std::io::Error> {
+    pub fn get_logs(&self, since: u64, until: Option<u64>, max_lines: Option<u64>) -> Result<Vec<LogLine>, std::io::Error> {
         let mut j = OpenOptions::default()
                 .system(true)
                 .local_only(true)
@@ -138,7 +138,7 @@ impl JournalBroadcaster {
     }
 
 
-    pub fn get_rlogs(self: &Self, since: Option<u64>, until: u64, max_lines: Option<u64>,) -> Result<Vec<LogLine>, std::io::Error> {
+    pub fn get_rlogs(&self, since: Option<u64>, until: u64, max_lines: Option<u64>,) -> Result<Vec<LogLine>, std::io::Error> {
         let mut j = OpenOptions::default()
                 .system(true)
                 .local_only(true)
@@ -216,7 +216,11 @@ impl McsvManager {
         }
     }
 
-    pub async fn list_servers(self: &Self) -> Result<Vec<String>, zbus::Error> {
+    pub fn list_servers(&self) -> Vec<String> {
+        self.log_broadcasters.keys().into_iter().map(|s| s.to_owned()).collect()
+    }
+
+    async fn list_available_servers_instance(&self) -> Result<Vec<String>, zbus::Error> {
         let patterns= vec!["minecraft@*.service"];
         let units = self.dbus.list_unit_files_by_patterns(&vec![], &patterns).await?;
         
@@ -231,47 +235,66 @@ impl McsvManager {
             ).collect())
     }
 
-    pub async fn get_server_unit_status(self: &Self, name: &str) -> Result<Option<UnitStatus>, zbus::Error> {
-        let name = format!("minecraft@{}.service", name);
-        let units = self.dbus.list_units_by_names(&vec![&name]).await?;
+    fn test_valid_instance(&self, name: &str) -> Result<(), std::io::Error> {
+        if self.server_names.iter().any(|n| n == name) {
+            Ok(())
+        } else {
+            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "invalid instance name"))
+        }
+    }
+
+    fn format_service_name(name: &str) -> String {
+        format!("minecraft@{}.service", name)
+    }
+
+    pub async fn get_server_unit_status(&self, name: &str) -> Result<Option<UnitStatus>, zbus::Error> {
+        self.test_valid_instance(name)?;
+        let unit_name = Self::format_service_name(name);
+        let units = self.dbus.list_units_by_names(&vec![&unit_name]).await?;
         Ok(if units.len() < 1 { None } else { Some(units[0].clone()) } )
     }
 
-    pub async fn get_server_process(self: &Self, name: &str) -> Result<Option<Process>, zbus::Error> {
-        let name = format!("minecraft@{}.service", name);
-        let procs = self.dbus.get_unit_processes(&name).await?;
+    pub async fn get_server_process(&self, name: &str) -> Result<Option<Process>, zbus::Error> {
+        self.test_valid_instance(name)?;
+        let unit_name = Self::format_service_name(name);
+        let procs = self.dbus.get_unit_processes(&unit_name).await?;
         Ok(if procs.len() < 1 { None } else { Some(procs[0].clone()) } )
     }
 
-    pub async fn start_server(self: &Self, name: &str) -> Result<(), zbus::Error> {
-        let name = format!("minecraft@{}.service", name);
-        self.dbus.start_unit(&name, &"replace").await?;
+    pub async fn start_server(&self, name: &str) -> Result<(), zbus::Error> {
+        self.test_valid_instance(name)?;
+        let unit_name = Self::format_service_name(name);
+        self.dbus.start_unit(&unit_name, &"replace").await?;
         Ok(())
     }
 
-    pub async fn stop_server(self: &Self, name: &str) -> Result<(), zbus::Error> {
-        let name = format!("minecraft@{}.service", name);
-        self.dbus.stop_unit(&name, &"replace").await?;
+    pub async fn stop_server(&self, name: &str) -> Result<(), zbus::Error> {
+        self.test_valid_instance(name)?;
+        let unit_name = Self::format_service_name(name);
+        self.dbus.stop_unit(&unit_name, &"replace").await?;
         Ok(())
     }
 
-    pub async fn restart_server(self: &Self, name: &str) -> Result<(), zbus::Error> {
-        let name = format!("minecraft@{}.service", name);
-        self.dbus.restart_unit(&name, &"replace").await?;
+    pub async fn restart_server(&self, name: &str) -> Result<(), zbus::Error> {
+        self.test_valid_instance(name)?;
+        let unit_name = Self::format_service_name(name);
+        self.dbus.restart_unit(&unit_name, &"replace").await?;
         Ok(())
     }
 
-    pub async fn inject_command(self: &Self, name: &str, cmd: &str) -> Result<(), std::io::Error> {
+    pub async fn inject_command(&self, name: &str, cmd: &str) -> Result<(), std::io::Error> {
+        self.test_valid_instance(name)?;
         let mut file = fs::OpenOptions::new().write(true).create(false)
                 .open(Path::new("/run/minecraft/").join(format!("{}.stdin", name))).await?;
         file.write_all(cmd.as_bytes()).await?;
         Ok(())
     }
 
-    pub async fn update(self: &mut Self) -> Result<(), zbus::Error> {
-        self.server_names = self.list_servers().await?;
+    pub async fn update(&mut self) -> Result<(), zbus::Error> {
+        self.server_names = self.list_available_servers_instance().await?;
         for name in self.server_names.iter() {
-            let unit_name = format!("minecraft@{}.service", name);
+            if self.log_broadcasters.contains_key(name) { continue; }
+            let unit_name = Self::format_service_name(name);
             self.log_broadcasters.insert(name.clone(), JournalBroadcaster::new(unit_name, name.clone()));
             // println!("added journal listenter for {}", name);
         }

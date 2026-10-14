@@ -176,11 +176,7 @@ pub enum Auth {
 
 impl Auth {
     pub fn has(&self, bits: PermissionBits) -> bool {
-        match self {
-            Self::Claims(c) => c.permission & bits == bits,
-            Self::Bypass => true,
-            Self::None => false
-        }
+        (self.get_permission() & bits) == bits
     }
 
     pub fn require(&self, bits: PermissionBits) -> Result<(), AppError> {

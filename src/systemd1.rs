@@ -49,15 +49,15 @@ impl Systemd1 {
         Ok(Systemd1{ conn, proxy })
     }
 
-    pub async fn list_units_by_patterns(self: &Self, states: &Vec<&str>, patterns: &Vec<&str>) -> Result<Vec<UnitStatus>> {
+    pub async fn list_units_by_patterns(&self, states: &Vec<&str>, patterns: &Vec<&str>) -> Result<Vec<UnitStatus>> {
         Ok(self.proxy.call("ListUnitsByPatterns",&(states, patterns)).await?)
     }
 
-    pub async fn list_units_by_names(self: &Self, names: &Vec<&str>) -> Result<Vec<UnitStatus>> {
+    pub async fn list_units_by_names(&self, names: &Vec<&str>) -> Result<Vec<UnitStatus>> {
         Ok(self.proxy.call("ListUnitsByNames",&(names)).await?)
     }
 
-    pub async fn list_unit_files_by_patterns(self: &Self, states: &Vec<&str>, patterns: &Vec<&str>) -> Result<Vec<UnitFile>> {
+    pub async fn list_unit_files_by_patterns(&self, states: &Vec<&str>, patterns: &Vec<&str>) -> Result<Vec<UnitFile>> {
         Ok(self.proxy.call("ListUnitFilesByPatterns",&(states, patterns)).await?)
     }
 
