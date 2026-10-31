@@ -316,7 +316,13 @@ mod tests {
                 post(path)
             };
             let right = send(&state, call.token(bit)).await.0;
-            assert_eq!(right, StatusCode::NOT_IMPLEMENTED, "{method} {path}");
+            // image and update are implemented: an unknown service is a 404.
+            let expected = if path.ends_with("/image") || path.ends_with("/update") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::NOT_IMPLEMENTED
+            };
+            assert_eq!(right, expected, "{method} {path}");
         }
         let (status, _, body) = send(&state, post("/service/a/explode").token(0x3ff)).await;
         assert_eq!(status, StatusCode::NOT_FOUND);

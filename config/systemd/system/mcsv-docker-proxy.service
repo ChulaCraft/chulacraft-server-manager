@@ -1,0 +1,29 @@
+[Unit]
+Description=Filtering Docker socket proxy for the Minecraft Server Manager
+After=docker.service
+Wants=docker.service
+
+[Service]
+# The manager group may use the socket; the proxy is the only thing that
+# touches /var/run/docker.sock on the manager's behalf.
+DynamicUser=yes
+Group=mcsv-mgr
+SupplementaryGroups=docker
+RuntimeDirectory=mcsv-docker-proxy
+RuntimeDirectoryMode=0750
+Environment=MCSV_CONFIG=/etc/mcsv_manager/config.toml
+ExecStart=/usr/local/bin/mcsv-docker-proxy
+Restart=on-failure
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
