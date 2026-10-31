@@ -1,82 +1,96 @@
-use axum::{
-    Router,
-    routing::{get, post},
+use std::sync::Arc;
+
+use mcsv_manager::{
+    auth::{self, Peer},
+    backend::ServiceBackend,
+    config::Config,
+    routes,
+    state::AppState,
 };
-use std::{os::unix::io::FromRawFd, sync::Arc};
 use tokio::{
     net::UnixListener,
     signal::unix::{SignalKind, signal},
-    sync::Mutex,
 };
 
-mod auth;
-mod handlers;
-mod mcsv_mgr;
-mod models;
-mod systemd1;
-use systemd1::Systemd1;
+#[cfg(not(feature = "fake-backend"))]
+async fn backend() -> Arc<dyn ServiceBackend> {
+    Arc::new(
+        mcsv_manager::backend::SystemdBackend::new()
+            .await
+            .expect("cannot reach systemd over D-Bus"),
+    )
+}
 
-use crate::mcsv_mgr::McsvManager;
+#[cfg(feature = "fake-backend")]
+async fn backend() -> Arc<dyn ServiceBackend> {
+    Arc::new(mcsv_manager::backend::FakeBackend::new(&[
+        "survival", "creative",
+    ]))
+}
 
-#[derive(Debug)]
-pub struct AppState {
-    pub dbus: Arc<Systemd1>,
-    pub mcsv_mgr: Arc<Mutex<McsvManager>>,
-    pub jwt: Option<auth::Jwt>,
-    pub unix_gids: Vec<(u32, auth::PermissionBits)>,
-    pub game_uid: Option<u32>,
+enum Listener {
+    Unix(UnixListener),
+    #[cfg(feature = "fake-backend")]
+    Tcp(tokio::net::TcpListener),
+}
+
+/// Production: the socket systemd hands over as fd 0.
+#[cfg(not(feature = "fake-backend"))]
+async fn listen() -> Listener {
+    Listener::Unix(systemd_socket())
+}
+
+/// fake-backend: `MCSV_FAKE_LISTEN=tcp:127.0.0.1:8080` or `unix:/path/to.sock`.
+#[cfg(feature = "fake-backend")]
+async fn listen() -> Listener {
+    let spec = std::env::var("MCSV_FAKE_LISTEN")
+        .expect("MCSV_FAKE_LISTEN is required with fake-backend (tcp:ADDR or unix:PATH)");
+    match spec.split_once(':') {
+        Some(("tcp", addr)) => Listener::Tcp(tokio::net::TcpListener::bind(addr).await.unwrap()),
+        Some(("unix", path)) => Listener::Unix(UnixListener::bind(path).unwrap()),
+        _ => panic!("MCSV_FAKE_LISTEN must be tcp:ADDR or unix:PATH"),
+    }
+}
+
+#[cfg(not(feature = "fake-backend"))]
+fn systemd_socket() -> UnixListener {
+    let std_listener: std::os::unix::net::UnixListener =
+        unsafe { std::os::fd::FromRawFd::from_raw_fd(0) };
+    std_listener.set_nonblocking(true).unwrap();
+    UnixListener::from_std(std_listener).unwrap()
 }
 
 #[tokio::main]
 async fn main() {
-    let dbus = Arc::new(Systemd1::new().await.unwrap());
-    let app_state = Arc::new(AppState {
-        dbus: dbus.clone(),
-        mcsv_mgr: Arc::new(Mutex::new(McsvManager::new(dbus.clone()))),
+    let backend = backend().await;
+    let state = Arc::new(AppState {
+        backend: backend.clone(),
+        config: Config::from_env().unwrap_or_else(|e| panic!("{e}")),
         jwt: auth::Jwt::from_env()
             .inspect_err(|e| eprintln!("warning: Jwt not initialized: {}", e))
             .ok(),
-        unix_gids: auth::unix_gids(),
+        trusted_uids: auth::trusted_uids_from_env().unwrap_or_else(|e| panic!("{e}")),
         game_uid: auth::game_uid(),
     });
 
-    let signal_state = app_state.clone();
-    tokio::spawn(async move {
-        handle_signals(signal_state).await;
-    });
+    tokio::spawn(handle_signals(backend.clone()));
+    backend.reload().await.unwrap();
 
-    app_state.mcsv_mgr.lock().await.update().await.unwrap();
+    let app = routes::router(state);
 
-    let app = Router::new()
-        .route("/status", get(handlers::get_host_status))
-        .route("/servers", get(handlers::list_servers))
-        .route("/server/{id}/status", get(handlers::get_server_status))
-        .route("/server/{id}/console", get(handlers::handle_server_console))
-        .route("/server/{id}/log", get(handlers::get_server_log))
-        .route("/server/{id}/rlog", get(handlers::get_server_rlog))
-        // POST, so a link or prefetch can never fire them.
-        .route("/server/{id}/cmd", post(handlers::handle_server_command))
-        .route(
-            "/server/{id}/{action}",
-            post(handlers::handle_server_action),
-        )
-        .with_state(app_state.clone());
+    println!("Minecraft Server Manager listening...");
 
-    let std_listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(0) };
-    std_listener.set_nonblocking(true).unwrap();
-    let listener = UnixListener::from_std(std_listener).unwrap();
-
-    println!("Minecraft Server Manager listening on Systemd socket...");
-
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<auth::Peer>(),
-    )
-    .await
-    .unwrap();
+    match listen().await {
+        Listener::Unix(l) => axum::serve(l, app.into_make_service_with_connect_info::<Peer>())
+            .await
+            .unwrap(),
+        // No peer credentials over TCP, so every request takes the token path.
+        #[cfg(feature = "fake-backend")]
+        Listener::Tcp(l) => axum::serve(l, app).await.unwrap(),
+    }
 }
 
-async fn handle_signals(state: Arc<AppState>) {
+async fn handle_signals(backend: Arc<dyn ServiceBackend>) {
     // Create a listener for SIGHUP
     let mut reload_signal = signal(SignalKind::hangup()).unwrap();
 
@@ -84,7 +98,7 @@ async fn handle_signals(state: Arc<AppState>) {
         reload_signal.recv().await;
         println!("Received SIGHUP: Reloading configuration...");
 
-        state.mcsv_mgr.lock().await.update().await.unwrap();
+        backend.reload().await.unwrap();
 
         println!("Reload complete.");
     }

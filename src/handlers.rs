@@ -22,10 +22,10 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 
 use crate::{
-    AppState,
     auth::{self, Auth},
-    mcsv_mgr::JournalBroadcaster,
+    backend::LogSource,
     models::ServerStatus,
+    state::AppState,
 };
 
 #[derive(Debug)] // Required for the Error trait
@@ -62,6 +62,10 @@ pub enum AppError {
     #[error("API error: {0}")]
     Api(#[from] ApiError),
 
+    /// 401 or 403. `json` picks `{ "error": string }` over an empty body.
+    #[error("Denied: {status}")]
+    Denied { status: StatusCode, json: bool },
+
     #[error("Unknown error")]
     Unknown,
 }
@@ -70,6 +74,25 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         if let AppError::Api(ApiError(status)) = self {
             return status.into_response();
+        }
+        if let AppError::Denied { status, json } = self {
+            let mut res = if json {
+                let message = if status == StatusCode::UNAUTHORIZED {
+                    "unauthorized"
+                } else {
+                    "forbidden"
+                };
+                (status, Json(json!({ "error": message }))).into_response()
+            } else {
+                status.into_response()
+            };
+            if status == StatusCode::UNAUTHORIZED {
+                res.headers_mut().insert(
+                    axum::http::header::WWW_AUTHENTICATE,
+                    axum::http::HeaderValue::from_static("Bearer"),
+                );
+            }
+            return res;
         }
 
         eprintln!("Internal Error: {}", self);
@@ -117,10 +140,9 @@ pub async fn list_servers(
 ) -> Result<Json<Value>, AppError> {
     auth.require(auth::STATUS)?;
     let servers = state
-        .mcsv_mgr
-        .lock()
+        .backend
+        .server_names()
         .await
-        .server_names
         .iter()
         .map(|name| json!(name))
         .collect();
@@ -134,12 +156,7 @@ pub async fn get_server_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<ServerStatus>, AppError> {
     auth.require(auth::STATUS)?;
-    let unit = state
-        .mcsv_mgr
-        .lock()
-        .await
-        .get_server_unit_status(&id)
-        .await?;
+    let unit = state.backend.unit_status(&id).await?;
 
     let unit = if let Some(unit) = unit {
         unit
@@ -149,7 +166,7 @@ pub async fn get_server_status(
 
     let mut res = ServerStatus::from(unit);
 
-    let proc = state.mcsv_mgr.lock().await.get_server_process(&id).await;
+    let proc = state.backend.server_process(&id).await;
 
     if let Ok(Some(proc)) = proc {
         res.stat = (&proc).try_into().ok();
@@ -172,15 +189,11 @@ pub async fn get_server_log(
     state: State<Arc<AppState>>,
 ) -> Result<Json<Value>, AppError> {
     auth.require(auth::LOGS)?;
-    let jb = {
-        let mcsv_mgr = state.mcsv_mgr.lock().await;
-        let lb = mcsv_mgr.log_broadcasters.get(&id);
-        if let Some(lb) = lb {
-            lb.clone()
-        } else {
-            return Err(AppError::Api(StatusCode::NOT_FOUND.into()));
-        }
-    };
+    let jb = state
+        .backend
+        .log_source(&id)
+        .await
+        .ok_or(AppError::Api(StatusCode::NOT_FOUND.into()))?;
 
     Ok(Json(Value::Array(
         jb.get_logs(param.since, param.until, param.max_lines)?
@@ -211,15 +224,11 @@ pub async fn get_server_rlog(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Value>, AppError> {
     auth.require(auth::LOGS)?;
-    let jb = {
-        let mcsv_mgr = state.mcsv_mgr.lock().await;
-        let lb = mcsv_mgr.log_broadcasters.get(&id);
-        if let Some(lb) = lb {
-            lb.clone()
-        } else {
-            return Err(AppError::Api(StatusCode::NOT_FOUND.into()));
-        }
-    };
+    let jb = state
+        .backend
+        .log_source(&id)
+        .await
+        .ok_or(AppError::Api(StatusCode::NOT_FOUND.into()))?;
 
     Ok(Json(Value::Array(
         jb.get_rlogs(param.since, param.until, param.max_lines)?
@@ -251,7 +260,7 @@ pub async fn handle_server_command(
     auth.require(auth::CONSOLE_WRITE)?;
 
     let cmd = body.command;
-    if let Auth::Claims(c) = &auth {
+    if let Some(c) = auth.claims() {
         println!(
             "Received command for {} from {} (jti {}): {}",
             id, c.sub, c.jti, cmd
@@ -265,12 +274,7 @@ pub async fn handle_server_command(
         cmd.to_string()
     };
 
-    Ok(state
-        .mcsv_mgr
-        .lock()
-        .await
-        .inject_command(&id, &cmd)
-        .await?)
+    state.backend.inject_command(&id, &cmd).await
 }
 
 pub async fn handle_server_action(
@@ -284,7 +288,7 @@ pub async fn handle_server_action(
         "restart" => auth::RESTART,
         _ => return Err(AppError::Api(StatusCode::NOT_FOUND.into())),
     })?;
-    if let Auth::Claims(c) = &auth {
+    if let Some(c) = auth.claims() {
         println!(
             "server action {} to {} from {} (jti {})",
             action, id, c.sub, c.jti
@@ -293,9 +297,9 @@ pub async fn handle_server_action(
         println!("server action {} to {}", action, id);
     }
     match action.as_str() {
-        "start" => state.mcsv_mgr.lock().await.start_server(&id).await?,
-        "stop" => state.mcsv_mgr.lock().await.stop_server(&id).await?,
-        "restart" => state.mcsv_mgr.lock().await.restart_server(&id).await?,
+        "start" => state.backend.start_server(&id).await?,
+        "stop" => state.backend.stop_server(&id).await?,
+        "restart" => state.backend.restart_server(&id).await?,
         _ => return Err(AppError::Api(StatusCode::NOT_FOUND.into())),
     };
 
@@ -312,15 +316,11 @@ pub async fn handle_server_console(
 ) -> Result<impl axum::response::IntoResponse, AppError> {
     auth.require(auth::CONSOLE_READ)?;
     // println!("connecting to {}", id);
-    let jb = {
-        let mcsv_mgr = state.mcsv_mgr.lock().await;
-        let lb = mcsv_mgr.log_broadcasters.get(&id);
-        if let Some(lb) = lb {
-            lb.clone()
-        } else {
-            return Err(AppError::Api(StatusCode::NOT_FOUND.into()));
-        }
-    };
+    let jb = state
+        .backend
+        .log_source(&id)
+        .await
+        .ok_or(AppError::Api(StatusCode::NOT_FOUND.into()))?;
     // The browser must get its subprotocol echoed back or it drops the socket.
     Ok(ws
         .protocols([auth::WS_PROTOCOL])
@@ -339,16 +339,16 @@ fn forbidden_message() -> Message {
 pub async fn handle_server_console_socket(
     socket: WebSocket,
     state: State<Arc<AppState>>,
-    jb: Arc<JournalBroadcaster>,
+    jb: Arc<dyn LogSource>,
     auth: Auth,
 ) {
     let (sender, mut receiver) = socket.split();
-    let mut rx = jb.tx.subscribe();
+    let mut rx = jb.subscribe();
     let sender = Arc::new(Mutex::new(sender));
 
     let sender0 = sender.clone();
 
-    let name = jb.name.clone();
+    let name = jb.name().to_string();
     let mut recv_task = tokio::spawn(async move {
         while let Some(Ok(Message::Text(text))) = receiver.next().await {
             let inmsg = serde_json::from_str(text.as_str());
@@ -389,7 +389,7 @@ pub async fn handle_server_console_socket(
             match inmsg.index("type").as_str() {
                 Some("command") => {
                     let cmd = inmsg.index("command").as_str().unwrap_or("");
-                    if let Auth::Claims(c) = &auth {
+                    if let Some(c) = auth.claims() {
                         println!(
                             "Received command for {} from {} (jti {}): {}",
                             name, c.sub, c.jti, cmd
@@ -403,12 +403,7 @@ pub async fn handle_server_console_socket(
                         cmd.to_string()
                     };
 
-                    let res = state
-                        .mcsv_mgr
-                        .lock()
-                        .await
-                        .inject_command(&name, &cmd)
-                        .await;
+                    let res = state.backend.inject_command(&name, &cmd).await;
                     if let Err(e) = res {
                         let msg = format!("Failed to inject command: {}", e);
                         eprintln!("{}", msg);
@@ -446,12 +441,7 @@ pub async fn handle_server_console_socket(
                     }
                 }
                 Some("status_mcsv") => {
-                    let unit = state
-                        .mcsv_mgr
-                        .lock()
-                        .await
-                        .get_server_unit_status(&jb.name)
-                        .await;
+                    let unit = state.backend.unit_status(jb.name()).await;
                     let unit = if let Ok(Some(unit)) = unit {
                         unit
                     } else {
@@ -467,12 +457,7 @@ pub async fn handle_server_console_socket(
                         "active_state": unit.active_state,
                         "sub_state": unit.sub_state
                     });
-                    let proc = state
-                        .mcsv_mgr
-                        .lock()
-                        .await
-                        .get_server_process(&jb.name)
-                        .await;
+                    let proc = state.backend.server_process(jb.name()).await;
 
                     if let Ok(Some(proc)) = proc {
                         *msg.index_mut("stat") = json!({
@@ -591,7 +576,7 @@ pub async fn handle_server_console_socket(
             }
         }
     });
-    // println!("connected to {}", &jb.name);
+    // println!("connected to {}", jb.name());
 
     // If either task finishes (disconnect or error), abort the other
     tokio::select! {

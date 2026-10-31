@@ -7,7 +7,7 @@ use std::{
 use systemd::journal::OpenOptions;
 use tokio::{fs, io::AsyncWriteExt, sync::broadcast};
 
-use crate::systemd1::{Process, UnitStatus};
+use crate::systemd1::{Process, Systemd1, UnitStatus};
 
 // The message we'll send over the broadcast channel
 #[derive(Clone, Debug, serde::Serialize)]
@@ -249,14 +249,14 @@ impl JournalBroadcaster {
 
 #[derive(Debug)]
 pub struct McsvManager {
-    pub dbus: Arc<crate::Systemd1>,
+    pub dbus: Arc<Systemd1>,
 
     pub server_names: Vec<String>,
     pub log_broadcasters: HashMap<String, Arc<JournalBroadcaster>>,
 }
 
 impl McsvManager {
-    pub fn new(dbus: Arc<crate::Systemd1>) -> Self {
+    pub fn new(dbus: Arc<Systemd1>) -> Self {
         Self {
             dbus,
             server_names: vec![],

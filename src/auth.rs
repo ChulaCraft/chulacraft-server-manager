@@ -1,20 +1,14 @@
-use std::{
-    ffi::CString,
-    io,
-    os::fd::{AsRawFd, RawFd},
-    sync::Arc,
-};
+use std::{ffi::CString, io, sync::Arc};
 
 use axum::{
     extract::{ConnectInfo, FromRequestParts, connect_info::Connected},
-    http::{HeaderMap, header, request::Parts},
+    http::{HeaderMap, StatusCode, header, request::Parts},
     serve::IncomingStream,
 };
-use http_unix_client::StatusCode;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::net::UnixListener;
 
-use crate::{AppState, handlers::AppError};
+use crate::{handlers::AppError, state::AppState};
 
 pub type PermissionBits = u32;
 
@@ -27,21 +21,16 @@ pub const CONSOLE_WRITE: PermissionBits = 8;
 pub const START: PermissionBits = 16;
 pub const STOP: PermissionBits = 32;
 pub const RESTART: PermissionBits = 64;
+pub const BACKUP_READ: PermissionBits = 128;
+pub const BACKUP_RUN: PermissionBits = 256;
+pub const UPDATE: PermissionBits = 512;
 
 /// Browsers can't set headers on a WebSocket, so the console sends the token as
 /// the second subprotocol: `Sec-WebSocket-Protocol: mcsv.jwt, <token>`.
 pub const WS_PROTOCOL: &str = "mcsv.jwt";
 
-/// Local callers in any of these groups skip the token: they could reach the
-/// units through systemd anyway. Everyone else (Apache runs as www-data, which
-/// must not be in them) needs a JWT.
-pub const UNIX_GROUPS: [(&str, PermissionBits); 2] = [
-    ("mcsv-mgr", u32::MAX),
-    ("adm", STATUS | LOGS | CONSOLE_READ),
-];
-
-/// The game servers run as this user, which is also in mcsv-mgr. A plugin must
-/// not be able to drive the manager, so it never gets the unix shortcut.
+/// The game servers run as this user. A plugin must not be able to drive the
+/// manager, so it never gets the unix shortcut, even if its uid is listed.
 pub const GAME_USER: &str = "mcsv";
 
 #[derive(serde::Deserialize, Debug, Clone)]
@@ -109,20 +98,24 @@ impl Jwt {
     }
 }
 
-/// Group ids for `UNIX_GROUPS`; groups missing on this host are skipped.
-/// Call once at startup: getgrnam isn't thread-safe.
-pub fn unix_gids() -> Vec<(u32, PermissionBits)> {
-    UNIX_GROUPS
-        .iter()
-        .filter_map(|(name, perm)| {
-            let name = CString::new(*name).ok()?;
-            let group = unsafe { libc::getgrnam(name.as_ptr()) };
-            (!group.is_null()).then(|| unsafe { ((*group).gr_gid, *perm) })
+/// `MCSV_TRUSTED_UIDS`: numeric uids, separated by commas or spaces. Root is
+/// always trusted and needs no entry. A bad entry is an error, not a skip, so a
+/// typo can't quietly leave an operator locked out (or in).
+pub fn parse_uids(raw: &str) -> Result<Vec<u32>, String> {
+    raw.split([',', ' ', '\n'])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            part.parse::<u32>()
+                .map_err(|_| format!("MCSV_TRUSTED_UIDS: {part:?} is not a numeric uid"))
         })
         .collect()
 }
 
-/// Uid of `GAME_USER`, if it exists. Same startup-only rule as `unix_gids`.
+pub fn trusted_uids_from_env() -> Result<Vec<u32>, String> {
+    parse_uids(&std::env::var("MCSV_TRUSTED_UIDS").unwrap_or_default())
+}
+
+/// Uid of `GAME_USER`, if it exists. Call once at startup: getpwnam isn't thread-safe.
 pub fn game_uid() -> Option<u32> {
     let name = CString::new(GAME_USER).ok()?;
     let user = unsafe { libc::getpwnam(name.as_ptr()) };
@@ -134,17 +127,12 @@ pub fn game_uid() -> Option<u32> {
 #[derive(Clone, Debug)]
 pub struct Peer {
     pub uid: Option<u32>,
-    pub groups: Vec<u32>,
 }
 
 impl Peer {
-    fn of(stream: &UnixStream) -> Self {
-        let cred = stream.peer_cred().ok();
-        let mut groups = peer_groups(stream.as_raw_fd());
-        groups.extend(cred.map(|c| c.gid()));
+    fn of(stream: &tokio::net::UnixStream) -> Self {
         Peer {
-            uid: cred.map(|c| c.uid()),
-            groups,
+            uid: stream.peer_cred().ok().map(|c| c.uid()),
         }
     }
 }
@@ -155,45 +143,13 @@ impl Connected<IncomingStream<'_, UnixListener>> for Peer {
     }
 }
 
-/// Supplementary groups via SO_PEERGROUPS. More than 256 groups fails closed
-/// (empty list), which just means that caller needs a token.
-fn peer_groups(fd: RawFd) -> Vec<u32> {
-    let mut groups = vec![0 as libc::gid_t; 256];
-    let mut len = (groups.len() * size_of::<libc::gid_t>()) as libc::socklen_t;
-    let ok = unsafe {
-        libc::getsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_PEERGROUPS,
-            groups.as_mut_ptr().cast(),
-            &mut len,
-        )
-    } == 0;
-    groups.truncate(if ok {
-        len as usize / size_of::<libc::gid_t>()
-    } else {
-        0
-    });
-    groups
-}
-
-/// A peer in an allowed group gets every permission, no token needed.
-fn unix_auth(peer: &Peer, gids: &[(u32, PermissionBits)], game_uid: Option<u32>) -> Option<Auth> {
-    let uid = peer.uid.filter(|&u| Some(u) != game_uid)?;
-
-    // root gain full control
-    if uid == 0 {
-        return Some(Auth::Bypass);
+/// The unix shortcut: only root and listed uids, never a group, and never the
+/// game-server account. Returns true when this peer may skip the token.
+fn unix_trusted(peer_uid: Option<u32>, trusted: &[u32], game_uid: Option<u32>) -> bool {
+    match peer_uid {
+        Some(uid) if Some(uid) != game_uid => uid == 0 || trusted.contains(&uid),
+        _ => false,
     }
-
-    let perm = gids.iter().fold(0u32, |acc, (g, p)| {
-        (if peer.groups.contains(g) { *p } else { 0u32 }) + acc
-    });
-    Some(Auth::Claims(Claims {
-        sub: format!("uid {uid}"),
-        jti: "unix".into(),
-        permission: perm,
-    }))
 }
 
 fn token(headers: &HeaderMap) -> Option<&str> {
@@ -211,12 +167,68 @@ fn token(headers: &HeaderMap) -> Option<&str> {
     parts.next()
 }
 
-/// The verified caller. Handlers take this and call `require` with the bits
-/// their route needs; a missing or bad token never reaches the handler body.
-pub enum Auth {
+/// Why a request was turned away. Logged as written here: no free text and no
+/// request data, so a token can never end up in the journal.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DenyReason {
+    NoToken,
+    BadToken,
+    NoVerificationKey,
+    MissingBits {
+        have: PermissionBits,
+        need: PermissionBits,
+    },
+}
+
+impl std::fmt::Display for DenyReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::NoToken => f.write_str("no token"),
+            Self::BadToken => f.write_str("token rejected"),
+            Self::NoVerificationKey => f.write_str("no verification key configured"),
+            Self::MissingBits { have, need } => {
+                write!(f, "missing permission bits (have {have}, need {need})")
+            }
+        }
+    }
+}
+
+/// One journal line per 401/403: path, peer uid and reason. Never the token.
+pub fn denial_line(
+    status: StatusCode,
+    path: &str,
+    peer_uid: Option<u32>,
+    reason: &DenyReason,
+) -> String {
+    let uid = peer_uid.map_or("-".to_string(), |u| u.to_string());
+    format!(
+        "auth denied: {} path={path} peer_uid={uid} reason={reason}",
+        status.as_u16()
+    )
+}
+
+/// `/service*` and `/backups` answer errors as `{ "error": string }`; the
+/// older `/server*`, `/servers` and `/status` keep their empty bodies.
+fn wants_json(path: &str) -> bool {
+    path == "/services"
+        || path == "/backups"
+        || path.starts_with("/service/")
+        || path.starts_with("/backups/")
+}
+
+/// Who the request is, once the token or the unix peer has been checked.
+pub enum Identity {
     Claims(Claims),
     Bypass,
-    None,
+}
+
+/// The verified caller. Handlers take this and call `require` with the bits
+/// their route needs. A request with no valid identity never reaches a handler:
+/// the extractor answers 401 first.
+pub struct Auth {
+    identity: Identity,
+    path: String,
+    peer_uid: Option<u32>,
 }
 
 impl Auth {
@@ -224,20 +236,43 @@ impl Auth {
         (self.get_permission() & bits) == bits
     }
 
+    /// 403 (and a journal line) when the identity lacks any of `bits`.
     pub fn require(&self, bits: PermissionBits) -> Result<(), AppError> {
         if self.has(bits) {
-            Ok(())
-        } else {
-            Err(AppError::Api(StatusCode::FORBIDDEN.into()))
+            return Ok(());
+        }
+        let reason = DenyReason::MissingBits {
+            have: self.get_permission(),
+            need: bits,
+        };
+        Err(deny(
+            StatusCode::FORBIDDEN,
+            &self.path,
+            self.peer_uid,
+            &reason,
+        ))
+    }
+
+    pub fn claims(&self) -> Option<&Claims> {
+        match &self.identity {
+            Identity::Claims(c) => Some(c),
+            Identity::Bypass => None,
         }
     }
 
     pub fn get_permission(&self) -> PermissionBits {
-        match self {
-            Self::Claims(c) => c.permission,
-            Self::Bypass => u32::MAX,
-            Self::None => 0,
+        match &self.identity {
+            Identity::Claims(c) => c.permission,
+            Identity::Bypass => u32::MAX,
         }
+    }
+}
+
+fn deny(status: StatusCode, path: &str, peer_uid: Option<u32>, reason: &DenyReason) -> AppError {
+    eprintln!("{}", denial_line(status, path, peer_uid, reason));
+    AppError::Denied {
+        status,
+        json: wants_json(path),
     }
 }
 
@@ -248,22 +283,38 @@ impl FromRequestParts<Arc<AppState>> for Auth {
         parts: &mut Parts,
         state: &Arc<AppState>,
     ) -> Result<Self, AppError> {
-        if let Some(auth) = parts
+        let path = parts.uri.path().to_string();
+        let peer_uid = parts
             .extensions
             .get::<ConnectInfo<Peer>>()
-            .and_then(|ConnectInfo(p)| unix_auth(p, &state.unix_gids, state.game_uid))
-        {
-            return Ok(auth);
+            .and_then(|ConnectInfo(p)| p.uid);
+        let auth = |identity| Auth {
+            identity,
+            path: path.clone(),
+            peer_uid,
+        };
+
+        // A verified token always wins, whoever the peer is.
+        let mut reason = DenyReason::NoToken;
+        if let Some(t) = token(&parts.headers) {
+            reason = match state.jwt.as_ref() {
+                None => DenyReason::NoVerificationKey,
+                Some(jwt) => match jwt.verify(t) {
+                    Some(claims) => return Ok(auth(Identity::Claims(claims))),
+                    None => DenyReason::BadToken,
+                },
+            };
         }
-        Ok(token(&parts.headers)
-            .and_then(|t| state.jwt.as_ref().and_then(|j| j.verify(t)))
-            .map(Auth::Claims)
-            .unwrap_or(Self::None))
+        if unix_trusted(peer_uid, &state.trusted_uids, state.game_uid) {
+            return Ok(auth(Identity::Bypass));
+        }
+        Err(deny(StatusCode::UNAUTHORIZED, &path, peer_uid, &reason))
     }
 }
 
+/// Throwaway Ed25519 pair and token helpers, shared with the router tests.
 #[cfg(test)]
-mod tests {
+pub(crate) mod testkit {
     use super::*;
     use jsonwebtoken::{EncodingKey, Header, encode};
 
@@ -271,19 +322,19 @@ mod tests {
     const PRIVATE: &str = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIEdC1r034m2hJxfU5JhJTxXWgYxO4UNNB5m2wEVx1Lrw\n-----END PRIVATE KEY-----\n";
     const PUBLIC: &str = "MCowBQYDK2VwAyEA2xUoKv6AN4BdDOL3w4jdT5//wM21JOJqtKniJe6nQ7c=";
 
-    fn now() -> u64 {
+    pub fn now() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs()
     }
 
-    fn jwt() -> Jwt {
+    pub fn jwt() -> Jwt {
         let pem = format!("-----BEGIN PUBLIC KEY-----\n{PUBLIC}\n-----END PUBLIC KEY-----\n");
         Jwt::new(DecodingKey::from_ed_pem(pem.as_bytes()).unwrap())
     }
 
-    fn sign(claims: serde_json::Value) -> String {
+    pub fn sign(claims: serde_json::Value) -> String {
         encode(
             &Header::new(Algorithm::EdDSA),
             &claims,
@@ -292,26 +343,41 @@ mod tests {
         .unwrap()
     }
 
-    fn claims(exp: u64) -> serde_json::Value {
-        serde_json::json!({ "iss": "chulacraft-web", "aud": "mcsv-manager", "sub": "Krisanapon", "jti": "j1", "iat": now(), "exp": exp, "permission": 71 })
+    pub fn claims(exp: u64, permission: u32) -> serde_json::Value {
+        serde_json::json!({ "iss": "chulacraft-web", "aud": "mcsv-manager", "sub": "Krisanapon", "jti": "j1", "iat": now(), "exp": exp, "permission": permission })
     }
+
+    /// A valid token carrying exactly `permission`.
+    pub fn token_with(permission: u32) -> String {
+        sign(claims(now() + 60, permission))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testkit::*;
+    use super::*;
 
     #[test]
     fn accepts_a_valid_token() {
-        let c = jwt().verify(&sign(claims(now() + 60))).unwrap();
+        let c = jwt().verify(&sign(claims(now() + 60, 71))).unwrap();
         assert_eq!((c.sub.as_str(), c.permission), ("Krisanapon", 71));
-        let auth = Auth::Claims(c);
+        let auth = Auth {
+            identity: Identity::Claims(c),
+            path: "/".into(),
+            peer_uid: None,
+        };
         assert!(auth.has(STATUS | LOGS | CONSOLE_READ | RESTART));
         assert!(!auth.has(CONSOLE_WRITE) && !auth.has(STOP));
     }
 
     #[test]
     fn rejects_expired_foreign_or_tampered_tokens() {
-        assert!(jwt().verify(&sign(claims(now() - 120))).is_none());
-        let mut other = claims(now() + 60);
+        assert!(jwt().verify(&sign(claims(now() - 120, 71))).is_none());
+        let mut other = claims(now() + 60, 71);
         other["aud"] = "something-else".into();
         assert!(jwt().verify(&sign(other)).is_none());
-        let token = sign(claims(now() + 60));
+        let token = sign(claims(now() + 60, 71));
         let (head, sig) = token.rsplit_once('.').unwrap();
         let forged = sign(serde_json::json!({ "permission": 2147483647 }));
         let forged_payload = forged.split('.').nth(1).unwrap();
@@ -341,27 +407,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unix_peer_in_an_allowed_group_skips_the_token() {
-        let (a, _b) = UnixStream::pair().unwrap();
-        let peer = Peer::of(&a);
-        let me = unsafe { libc::getegid() };
-        assert_eq!(peer.uid, Some(unsafe { libc::geteuid() }));
-        assert!(peer.groups.contains(&me));
-        let auth = unix_auth(&peer, &[(me, u32::MAX)], None).unwrap();
-        assert!(auth.has(u32::MAX));
-        assert!(
-            unix_auth(&peer, &[(u32::MAX - 1, 0)], None)
-                .unwrap()
-                .get_permission()
-                == 0
+    async fn peer_uid_comes_from_the_kernel() {
+        let (a, _b) = tokio::net::UnixStream::pair().unwrap();
+        assert_eq!(Peer::of(&a).uid, Some(unsafe { libc::geteuid() }));
+    }
+
+    #[test]
+    fn unix_shortcut_is_root_and_listed_uids_only() {
+        let trusted = [1001, 1002];
+        assert!(unix_trusted(Some(0), &trusted, None));
+        assert!(unix_trusted(Some(1001), &trusted, None));
+        assert!(unix_trusted(Some(1002), &trusted, None));
+        // www-data, an unlisted user, and an unknown peer all need a token.
+        assert!(!unix_trusted(Some(33), &trusted, None));
+        assert!(!unix_trusted(Some(1003), &trusted, None));
+        assert!(!unix_trusted(None, &trusted, None));
+    }
+
+    #[test]
+    fn the_game_account_never_skips_the_token_even_if_listed() {
+        assert!(!unix_trusted(Some(998), &[998], Some(998)));
+        assert!(unix_trusted(Some(1001), &[998, 1001], Some(998)));
+    }
+
+    #[test]
+    fn trusted_uid_list_parsing() {
+        assert_eq!(parse_uids("").unwrap(), Vec::<u32>::new());
+        assert_eq!(
+            parse_uids("1000, 1001 1002\n").unwrap(),
+            vec![1000, 1001, 1002]
         );
-        // The game-server account never skips the token, whatever its groups.
-        assert!(
-            unix_auth(&peer, &[(me, u32::MAX)], peer.uid)
-                .unwrap()
-                .get_permission()
-                == 0
-        );
+        assert!(parse_uids("1000,kai").unwrap_err().contains("kai"));
+        assert!(parse_uids("-1").is_err());
+        // A group name or anything else non-numeric is refused rather than skipped.
+        assert!(parse_uids("adm").is_err());
     }
 
     #[test]
@@ -377,5 +456,39 @@ mod tests {
         assert_eq!(token(&headers), Some("abc"));
         headers.insert(header::SEC_WEBSOCKET_PROTOCOL, "chat, abc".parse().unwrap());
         assert_eq!(token(&headers), None);
+    }
+
+    #[test]
+    fn json_errors_only_for_the_new_api() {
+        for p in ["/services", "/service/a/status", "/backups", "/backups/x"] {
+            assert!(wants_json(p), "{p}");
+        }
+        for p in ["/servers", "/server/a/status", "/status", "/servicesx"] {
+            assert!(!wants_json(p), "{p}");
+        }
+    }
+
+    #[test]
+    fn denial_lines_name_path_uid_and_reason_only() {
+        let line = denial_line(
+            StatusCode::UNAUTHORIZED,
+            "/services",
+            Some(33),
+            &DenyReason::BadToken,
+        );
+        assert_eq!(
+            line,
+            "auth denied: 401 path=/services peer_uid=33 reason=token rejected"
+        );
+        let line = denial_line(
+            StatusCode::FORBIDDEN,
+            "/server/a/cmd",
+            None,
+            &DenyReason::MissingBits { have: 1, need: 8 },
+        );
+        assert_eq!(
+            line,
+            "auth denied: 403 path=/server/a/cmd peer_uid=- reason=missing permission bits (have 1, need 8)"
+        );
     }
 }

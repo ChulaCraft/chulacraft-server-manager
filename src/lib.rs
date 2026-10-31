@@ -1,3 +1,13 @@
+pub mod api;
+pub mod auth;
+pub mod backend;
+pub mod backups;
+pub mod config;
+pub mod docker;
+pub mod handlers;
+pub mod mcsv_mgr;
+pub mod metrics;
 pub mod models;
-
+pub mod routes;
+pub mod state;
 pub mod systemd1;
