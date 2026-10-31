@@ -1,0 +1,16 @@
+title = "mcsv-manager gitleaks config"
+
+[extend]
+useDefault = true
+
+# The throwaway Ed25519 test key and the website-format token signed with it,
+# both in src/auth.rs (testkit and its test). Matches that one file and those
+# exact values only, so any other key or token still fails.
+[[allowlists]]
+description = "Throwaway Ed25519 test key and a token signed with it, in the auth unit tests"
+condition = "AND"
+paths = ['''(^|/)src/auth\.rs$''']
+regexes = [
+  '''MC4CAQAwBQYDK2VwBCIEIEdC1r034m2hJxfU5JhJTxXWgYxO4UNNB5m2wEVx1Lrw''',
+  '''eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9\.eyJpc3MiOiJjaHVsYWNyYWZ0LXdlYiIs''',
+]

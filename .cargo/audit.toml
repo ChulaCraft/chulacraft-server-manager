@@ -1,0 +1,9 @@
+[advisories]
+# Both are timing side channels in private-key operations of algorithms that
+# jsonwebtoken compiles in (RSA, P-256/P-384) but this manager never uses:
+# Validation is pinned to EdDSA and the host holds only a public key, so there is
+# no secret to leak. Revisit when jsonwebtoken lets us drop those backends.
+ignore = [
+    "RUSTSEC-2023-0071", # rsa: Marvin attack, no fixed release
+    "RUSTSEC-2026-0387", # crypto-bigint 0.5.x, pulled in by p256/p384
+]
