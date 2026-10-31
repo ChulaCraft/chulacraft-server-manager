@@ -1,9 +1,9 @@
-#/bin/bash
+#!/bin/bash
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
-CONFIG_DIR="$SCRIPT_DIR/config"
+CONFIG_DIR="$SCRIPT_DIR/../config"
 
 addgroup --system mcsv-mgr
 # Who may connect to the API socket. Connecting is not authority: see README.
@@ -20,17 +20,26 @@ chown -R mcsv-mgr:mcsv-mgr /srv/minecraft
 chmod -R 2775 /srv/minecraft
 
 mkdir -p /etc/apache2/sites-available
-if [ ! -f /etc/apache2/sites-available/mcsv_manager.conf ]; then cp $CONFIG_DIR/apache2/sites-available/mcsv_manager.conf /etc/apache2/sites-available/; fi
+if [ ! -f /etc/apache2/sites-available/mcsv_manager.conf ]; then
+    cp "$CONFIG_DIR/apache2/sites-available/mcsv_manager.conf" /etc/apache2/sites-available/
+fi
+# Never overwrite: it holds the operator's key and trusted uids.
 if [ ! -f /etc/mcsv_manager/env ]; then
     mkdir -p /etc/mcsv_manager
-    cp $CONFIG_DIR/mcsv_manager/env /etc/mcsv_manager/
+    cp "$CONFIG_DIR/mcsv_manager/env" /etc/mcsv_manager/
 fi
 
-cp $CONFIG_DIR/systemd/system/mcsv_manager.socket /usr/lib/systemd/system/
-cp $CONFIG_DIR/systemd/system/mcsv_manager.service /usr/lib/systemd/system/
-cp $CONFIG_DIR/systemd/system/minecraft@.socket /usr/lib/systemd/system/
-cp $CONFIG_DIR/tmpfiles.d/minecraft.conf /usr/lib/tmpfiles.d/
+cp "$CONFIG_DIR/systemd/system/mcsv_manager.socket" /usr/lib/systemd/system/
+cp "$CONFIG_DIR/systemd/system/mcsv_manager.service" /usr/lib/systemd/system/
+cp "$CONFIG_DIR/systemd/system/minecraft@.socket" /usr/lib/systemd/system/
+cp "$CONFIG_DIR/tmpfiles.d/minecraft.conf" /usr/lib/tmpfiles.d/
 
 systemd-tmpfiles --create
 
-if [ ! -f /etc/polkit-1/rules.d/mcsv-manager.rules ]; then cp $CONFIG_DIR/polkit-1/rules.d/mcsv-manager.rules /etc/polkit-1/rules.d/; fi
+# Repo-owned and security-relevant (it scopes what mcsv-mgr may manage), so a
+# re-run replaces it.
+mkdir -p /etc/polkit-1/rules.d
+cp "$CONFIG_DIR/polkit-1/rules.d/mcsv-manager.rules" /etc/polkit-1/rules.d/
+
+systemctl daemon-reload
+systemctl restart mcsv_manager.socket
