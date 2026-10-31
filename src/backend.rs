@@ -311,6 +311,9 @@ mod fake {
         names: Vec<String>,
         logs: Vec<std::sync::Arc<FakeLog>>,
         active_units: StdMutex<HashSet<String>>,
+        /// `ActiveState` per instance; absent means `active`.
+        states: StdMutex<std::collections::HashMap<String, String>>,
+        failing: StdMutex<HashSet<String>>,
         /// `"start survival"`, `"stop survival"`, `"unit chulacraft-update@bot.service"`, `"cmd survival say hi"`.
         pub calls: StdMutex<Vec<String>>,
     }
@@ -330,6 +333,8 @@ mod fake {
                     })
                     .collect(),
                 active_units: StdMutex::new(HashSet::new()),
+                states: StdMutex::new(Default::default()),
+                failing: StdMutex::new(HashSet::new()),
                 calls: StdMutex::new(vec![]),
             }
         }
@@ -341,6 +346,19 @@ mod fake {
                 // Same as the real backend, which answers an unknown instance with an IO error.
                 Err(io::Error::new(io::ErrorKind::NotFound, "invalid instance name").into())
             }
+        }
+
+        /// Sets the systemd `ActiveState` that `unit_status` reports for an instance.
+        pub fn set_state(&self, name: &str, active_state: &str) {
+            self.states
+                .lock()
+                .unwrap()
+                .insert(name.into(), active_state.into());
+        }
+
+        /// Makes `unit_status` fail for an instance, like an unreachable unit.
+        pub fn fail_status(&self, name: &str) {
+            self.failing.lock().unwrap().insert(name.into());
         }
 
         fn record(&self, call: String) {
@@ -356,11 +374,21 @@ mod fake {
 
         async fn unit_status(&self, name: &str) -> Result<Option<UnitStatus>, AppError> {
             self.known(name)?;
+            if self.failing.lock().unwrap().contains(name) {
+                return Err(io::Error::other("unit status failed").into());
+            }
+            let active_state = self
+                .states
+                .lock()
+                .unwrap()
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| "active".into());
             Ok(Some(UnitStatus {
                 name: format!("minecraft@{name}.service"),
                 description: format!("Minecraft Server {name}"),
                 load_state: "loaded".into(),
-                active_state: "active".into(),
+                active_state,
                 sub_state: "running".into(),
                 followed: String::new(),
                 object_path: zbus::zvariant::OwnedObjectPath::try_from("/")

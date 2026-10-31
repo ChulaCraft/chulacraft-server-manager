@@ -66,8 +66,21 @@ pub enum AppError {
     #[error("Denied: {status}")]
     Denied { status: StatusCode, json: bool },
 
+    /// A client-visible error with a JSON `{ "error": string }` body.
+    #[error("{message}")]
+    Status { status: StatusCode, message: String },
+
     #[error("Unknown error")]
     Unknown,
+}
+
+impl AppError {
+    pub fn status(status: StatusCode, message: impl Into<String>) -> Self {
+        AppError::Status {
+            status,
+            message: message.into(),
+        }
+    }
 }
 
 impl IntoResponse for AppError {
@@ -95,16 +108,23 @@ impl IntoResponse for AppError {
             return res;
         }
 
+        if let AppError::Status { status, message } = self {
+            return (status, Json(json!({ "error": message }))).into_response();
+        }
+
         eprintln!("Internal Error: {}", self);
 
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            #[cfg(debug_assertions)]
-            format!("Something went wrong: {}", self),
-            #[cfg(not(debug_assertions))]
-            "Something went wrong",
-        )
-            .into_response()
+        // systemd/D-Bus being unreachable is 503, anything else 500.
+        let status = if matches!(self, AppError::Dbus(_)) {
+            StatusCode::SERVICE_UNAVAILABLE
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        };
+        #[cfg(debug_assertions)]
+        let message = format!("Something went wrong: {}", self);
+        #[cfg(not(debug_assertions))]
+        let message = "Something went wrong";
+        (status, Json(json!({ "error": message }))).into_response()
     }
 }
 

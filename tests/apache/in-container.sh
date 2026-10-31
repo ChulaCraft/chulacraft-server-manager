@@ -30,8 +30,10 @@ apachectl configtest
 mkdir -p /tmp/keys
 gen_keys /tmp/keys
 # Same mode and group as the shipped socket unit: 0660, mcsv-http.
+printf '[[service]]\nid = "survival"\nname = "Survival"\nbackend = "systemd"\nunit = "minecraft@survival.service"\n' > /tmp/mgr.toml
+chmod 644 /tmp/mgr.toml
 ( umask 0117
-  MCSV_FAKE_LISTEN=unix:/run/mcsv_manager.sock \
+  MCSV_CONFIG=/tmp/mgr.toml MCSV_METRICS_PATH=/tmp/mgr-metrics.json MCSV_FAKE_LISTEN=unix:/run/mcsv_manager.sock \
       setpriv --reuid=mcsv-mgr --regid=mcsv-http --init-groups /out/mcsv_manager > /out/manager.log 2>&1 & )
 for _ in $(seq 50); do [ -S /run/mcsv_manager.sock ] && break; sleep 0.1; done
 [ -S /run/mcsv_manager.sock ] || { cat /out/manager.log; echo "manager did not start"; exit 1; }
@@ -64,13 +66,18 @@ ws() { # permission or empty; prints the response head
     eval curl -s -i --http1.1 --max-time 2 \
         -H "'Connection: Upgrade'" -H "'Upgrade: websocket'" \
         -H "'Sec-WebSocket-Version: 13'" -H "'Sec-WebSocket-Key: $(openssl rand -base64 16)'" \
-        $proto "$BASE/server/survival/console" || true
+        $proto "$BASE/${WS_PATH:-server/survival/console}" || true
 }
 check "ws: no token -> 401" "HTTP/1.1 401" "$(ws "" | head -1 | tr -d '\r' | cut -c1-12)"
 check "ws: token without CONSOLE_READ -> 403" "HTTP/1.1 403" "$(ws $STATUS | head -1 | tr -d '\r' | cut -c1-12)"
 head="$(ws $CONSOLE_READ | tr -d '\r')"
 check "ws: valid subprotocol token -> 101" "HTTP/1.1 101" "$(echo "$head" | head -1 | cut -c1-12)"
 check "ws: subprotocol echoed" "yes" "$(echo "$head" | grep -qi '^sec-websocket-protocol: mcsv.jwt$' && echo yes || echo no)"
+
+# The same socket through the new route; the manager needs a config for it.
+WS_PATH=service/survival/console
+check "ws /service: configured service -> 101" "HTTP/1.1 101" "$(ws $CONSOLE_READ | head -1 | tr -d '\r' | cut -c1-12)"
+WS_PATH=server/survival/console
 
 # The manager saw www-data (uid 33) as the peer, not Apache's own user or root.
 check "journal line names peer uid 33" yes "$(grep -q 'auth denied: 401 path=/servers peer_uid=33 reason=no token' /out/manager.log && echo yes || echo no)"
