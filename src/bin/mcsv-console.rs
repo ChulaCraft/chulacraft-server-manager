@@ -84,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let response = client
             .get(
                 args.socket.clone(),
-                &format!("/server/{}/status", &args.server_id),
+                &format!("/server/{}/status", args.server_id),
             )
             .send()
             .await
@@ -103,7 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let since_usec = args
             .since
             .as_ref()
-            .and_then(|t| Some(t.timestamp_micros()))
+            .map(|t| t.timestamp_micros())
             .unwrap_or(0);
         let msg = json!({
             "type": "get_logs",
@@ -119,7 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "command": line.unwrap()
         });
         let msg = serde_json::to_string(&msg).unwrap();
-        let _ = write.send(msg.into()).await?;
+        write.send(msg.into()).await?;
     }
 
     Ok(())

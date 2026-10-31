@@ -60,7 +60,7 @@ impl JournalBroadcaster {
                     .open()?;
                 println!(
                     "Journal thread for {} started : {}",
-                    &name_for_thread, &unit_for_thread
+                    name_for_thread, unit_for_thread
                 );
                 j.match_add("_SYSTEMD_UNIT", unit_for_thread)?;
                 j.seek_tail()?;
@@ -69,10 +69,7 @@ impl JournalBroadcaster {
                 loop {
                     match j.wait(None)? {
                         systemd::JournalWaitResult::Invalidate => {
-                            println!(
-                                "Journal invalidated for {}, re-seeking...",
-                                &name_for_thread
-                            );
+                            println!("Journal invalidated for {}, re-seeking...", name_for_thread);
                             j.seek_tail()?;
                             let _ = j.previous();
                             continue;
@@ -88,7 +85,7 @@ impl JournalBroadcaster {
                 }
             };
             if let Err(e) = run() {
-                eprintln!("Journal thread for {} died: {}", &name_for_thread, e);
+                eprintln!("Journal thread for {} died: {}", name_for_thread, e);
             }
             // println!("Journal thread for {} died", &name_for_thread);
         });
@@ -117,15 +114,15 @@ impl JournalBroadcaster {
         while let Some(entry) = j.next_entry()? {
             let timestamp = j.timestamp_usec()?;
 
-            if let Some(until) = until {
-                if timestamp > until {
-                    break;
-                }
+            if let Some(until) = until
+                && timestamp > until
+            {
+                break;
             }
-            if let Some(max_lines) = max_lines {
-                if out.len() as u64 > max_lines {
-                    break;
-                }
+            if let Some(max_lines) = max_lines
+                && out.len() as u64 > max_lines
+            {
+                break;
             }
 
             let line = LogLine::from_journal_entry(&entry, j.timestamp_usec()?);
@@ -152,15 +149,15 @@ impl JournalBroadcaster {
         while let Some(entry) = j.next_entry()? {
             let timestamp = j.timestamp_usec()?;
 
-            if let Some(until) = until {
-                if timestamp > until {
-                    break;
-                }
+            if let Some(until) = until
+                && timestamp > until
+            {
+                break;
             }
-            if let Some(max_lines) = max_lines {
-                if line_count > max_lines {
-                    break;
-                }
+            if let Some(max_lines) = max_lines
+                && line_count > max_lines
+            {
+                break;
             }
 
             let line = LogLine::from_journal_entry(&entry, timestamp);
@@ -191,15 +188,15 @@ impl JournalBroadcaster {
         while let Some(entry) = j.previous_entry()? {
             let timestamp = j.timestamp_usec()?;
 
-            if let Some(since) = since {
-                if timestamp < since {
-                    break;
-                }
+            if let Some(since) = since
+                && timestamp < since
+            {
+                break;
             }
-            if let Some(max_lines) = max_lines {
-                if out.len() as u64 > max_lines {
-                    break;
-                }
+            if let Some(max_lines) = max_lines
+                && out.len() as u64 > max_lines
+            {
+                break;
             }
 
             let line: LogLine = LogLine::from_journal_entry(&entry, j.timestamp_usec()?);
@@ -226,15 +223,15 @@ impl JournalBroadcaster {
         while let Some(entry) = j.previous_entry()? {
             let timestamp = j.timestamp_usec()?;
 
-            if let Some(since) = since {
-                if timestamp < since {
-                    break;
-                }
+            if let Some(since) = since
+                && timestamp < since
+            {
+                break;
             }
-            if let Some(max_lines) = max_lines {
-                if line_count > max_lines {
-                    break;
-                }
+            if let Some(max_lines) = max_lines
+                && line_count > max_lines
+            {
+                break;
             }
 
             let line = LogLine::from_journal_entry(&entry, timestamp);
@@ -261,18 +258,14 @@ pub struct McsvManager {
 impl McsvManager {
     pub fn new(dbus: Arc<crate::Systemd1>) -> Self {
         Self {
-            dbus: dbus,
+            dbus,
             server_names: vec![],
             log_broadcasters: HashMap::new(),
         }
     }
 
     pub fn list_servers(&self) -> Vec<String> {
-        self.log_broadcasters
-            .keys()
-            .into_iter()
-            .map(|s| s.to_owned())
-            .collect()
+        self.log_broadcasters.keys().map(|s| s.to_owned()).collect()
     }
 
     async fn list_available_servers_instance(&self) -> Result<Vec<String>, zbus::Error> {
@@ -319,7 +312,7 @@ impl McsvManager {
         self.test_valid_instance(name)?;
         let unit_name = Self::format_service_name(name);
         let units = self.dbus.list_units_by_names(&vec![&unit_name]).await?;
-        Ok(if units.len() < 1 {
+        Ok(if units.is_empty() {
             None
         } else {
             Some(units[0].clone())
@@ -330,7 +323,7 @@ impl McsvManager {
         self.test_valid_instance(name)?;
         let unit_name = Self::format_service_name(name);
         let procs = self.dbus.get_unit_processes(&unit_name).await?;
-        Ok(if procs.len() < 1 {
+        Ok(if procs.is_empty() {
             None
         } else {
             Some(procs[0].clone())
@@ -340,21 +333,21 @@ impl McsvManager {
     pub async fn start_server(&self, name: &str) -> Result<(), zbus::Error> {
         self.test_valid_instance(name)?;
         let unit_name = Self::format_service_name(name);
-        self.dbus.start_unit(&unit_name, &"replace").await?;
+        self.dbus.start_unit(&unit_name, "replace").await?;
         Ok(())
     }
 
     pub async fn stop_server(&self, name: &str) -> Result<(), zbus::Error> {
         self.test_valid_instance(name)?;
         let unit_name = Self::format_service_name(name);
-        self.dbus.stop_unit(&unit_name, &"replace").await?;
+        self.dbus.stop_unit(&unit_name, "replace").await?;
         Ok(())
     }
 
     pub async fn restart_server(&self, name: &str) -> Result<(), zbus::Error> {
         self.test_valid_instance(name)?;
         let unit_name = Self::format_service_name(name);
-        self.dbus.restart_unit(&unit_name, &"replace").await?;
+        self.dbus.restart_unit(&unit_name, "replace").await?;
         Ok(())
     }
 

@@ -54,14 +54,13 @@ impl Systemd1 {
         states: &Vec<&str>,
         patterns: &Vec<&str>,
     ) -> Result<Vec<UnitStatus>> {
-        Ok(self
-            .proxy
+        self.proxy
             .call("ListUnitsByPatterns", &(states, patterns))
-            .await?)
+            .await
     }
 
     pub async fn list_units_by_names(&self, names: &Vec<&str>) -> Result<Vec<UnitStatus>> {
-        Ok(self.proxy.call("ListUnitsByNames", &(names)).await?)
+        self.proxy.call("ListUnitsByNames", &(names)).await
     }
 
     pub async fn list_unit_files_by_patterns(
@@ -69,10 +68,9 @@ impl Systemd1 {
         states: &Vec<&str>,
         patterns: &Vec<&str>,
     ) -> Result<Vec<UnitFile>> {
-        Ok(self
-            .proxy
+        self.proxy
             .call("ListUnitFilesByPatterns", &(states, patterns))
-            .await?)
+            .await
     }
 
     pub async fn start_unit(
@@ -80,7 +78,7 @@ impl Systemd1 {
         name: &str,
         mode: &str,
     ) -> Result<zbus::zvariant::OwnedObjectPath> {
-        Ok(self.proxy.call("StartUnit", &(name, mode)).await?)
+        self.proxy.call("StartUnit", &(name, mode)).await
     }
 
     pub async fn stop_unit(
@@ -88,7 +86,7 @@ impl Systemd1 {
         name: &str,
         mode: &str,
     ) -> Result<zbus::zvariant::OwnedObjectPath> {
-        Ok(self.proxy.call("StopUnit", &(name, mode)).await?)
+        self.proxy.call("StopUnit", &(name, mode)).await
     }
 
     pub async fn restart_unit(
@@ -96,10 +94,10 @@ impl Systemd1 {
         name: &str,
         mode: &str,
     ) -> Result<zbus::zvariant::OwnedObjectPath> {
-        Ok(self.proxy.call("RestartUnit", &(name, mode)).await?)
+        self.proxy.call("RestartUnit", &(name, mode)).await
     }
 
     pub async fn get_unit_processes(&self, name: &str) -> Result<Vec<Process>> {
-        Ok(self.proxy.call("GetUnitProcesses", &(name)).await?)
+        self.proxy.call("GetUnitProcesses", &(name)).await
     }
 }

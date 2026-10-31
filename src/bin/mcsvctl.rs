@@ -65,7 +65,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     match &cli.command {
         Commands::List => {
             let response = client
-                .get(cli.socket, &format!("/servers"))
+                .get(cli.socket, "/servers")
                 .send()
                 .await
                 .map_err(|e| e.to_string())?;
@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 println!("{}", serde_json::to_string(&list)?);
             } else {
                 for sn in list {
-                    println!("{}", &sn);
+                    println!("{}", sn);
                 }
             }
         }
@@ -90,7 +90,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         Commands::Status { server_id } => {
             let response = client
-                .get(cli.socket, &format!("/server/{}/status", &server_id))
+                .get(cli.socket, &format!("/server/{}/status", server_id))
                 .send()
                 .await
                 .map_err(|e| e.to_string())?;
@@ -99,12 +99,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
             if cli.json {
                 println!("{}", serde_json::to_string(&stat)?);
             } else {
-                println!("{:#?}", &stat);
+                println!("{:#?}", stat);
             }
         }
         Commands::SendCommand { server_id, command } => {
             let response = client
-                .post(cli.socket, &format!("/server/{}/cmd", &server_id))
+                .post(cli.socket, &format!("/server/{}/cmd", server_id))
                 .header("Content-Type", "application/json")
                 .body(serde_json::to_string(&serde_json::json!({
                     "command": command

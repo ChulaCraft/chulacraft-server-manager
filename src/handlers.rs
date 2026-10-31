@@ -292,7 +292,7 @@ pub async fn handle_server_action(
     } else {
         println!("server action {} to {}", action, id);
     }
-    let _job_path = match action.as_str() {
+    match action.as_str() {
         "start" => state.mcsv_mgr.lock().await.start_server(&id).await?,
         "stop" => state.mcsv_mgr.lock().await.stop_server(&id).await?,
         "restart" => state.mcsv_mgr.lock().await.restart_server(&id).await?,
@@ -411,7 +411,7 @@ pub async fn handle_server_console_socket(
                         .await;
                     if let Err(e) = res {
                         let msg = format!("Failed to inject command: {}", e);
-                        eprintln!("{}", &msg);
+                        eprintln!("{}", msg);
                         let msg = json!({
                             "type": "error",
                             "message": msg
