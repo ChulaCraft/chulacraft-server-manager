@@ -294,21 +294,28 @@ impl FromRequestParts<Arc<AppState>> for Auth {
             peer_uid,
         };
 
-        // A verified token always wins, whoever the peer is.
-        let mut reason = DenyReason::NoToken;
+        // A presented token decides the request, whoever the peer is: a verified
+        // one wins, anything else is a 401. Only token-less requests may use the
+        // trusted-unix shortcut, so a relay running as root can't launder a bad token.
         if let Some(t) = token(&parts.headers) {
-            reason = match state.jwt.as_ref() {
+            let reason = match state.jwt.as_ref() {
                 None => DenyReason::NoVerificationKey,
                 Some(jwt) => match jwt.verify(t) {
                     Some(claims) => return Ok(auth(Identity::Claims(claims))),
                     None => DenyReason::BadToken,
                 },
             };
+            return Err(deny(StatusCode::UNAUTHORIZED, &path, peer_uid, &reason));
         }
         if unix_trusted(peer_uid, &state.trusted_uids, state.game_uid) {
             return Ok(auth(Identity::Bypass));
         }
-        Err(deny(StatusCode::UNAUTHORIZED, &path, peer_uid, &reason))
+        Err(deny(
+            StatusCode::UNAUTHORIZED,
+            &path,
+            peer_uid,
+            &DenyReason::NoToken,
+        ))
     }
 }
 

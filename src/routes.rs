@@ -214,6 +214,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_presented_bad_token_is_401_even_from_a_trusted_peer() {
+        let (state, backend) = state();
+        let expired = testkit::sign(testkit::claims(testkit::now() - 120, 1));
+        let mut foreign = testkit::claims(testkit::now() + 60, 1);
+        foreign["aud"] = "other".into();
+        let keyless = Arc::new(AppState {
+            backend: backend.clone(),
+            config: Config::default(),
+            jwt: None,
+            trusted_uids: vec![OPERATOR],
+            game_uid: Some(GAME),
+        });
+        for token in ["garbage".to_string(), expired, testkit::sign(foreign)] {
+            for uid in [0, OPERATOR] {
+                let call = post("/server/survival/restart").bearer(&token).peer(uid);
+                let (status, _, _) = send(&state, call).await;
+                assert_eq!(status, StatusCode::UNAUTHORIZED, "uid {uid}");
+                // No verification key: a presented token still can't fall through.
+                let call = post("/server/survival/restart").bearer(&token).peer(uid);
+                let (status, _, _) = send(&keyless, call).await;
+                assert_eq!(status, StatusCode::UNAUTHORIZED, "keyless uid {uid}");
+            }
+        }
+        assert!(backend.calls.lock().unwrap().is_empty());
+        // No token at all from root is still the shortcut.
+        let (status, _, _) = send(&state, post("/server/survival/restart").peer(0)).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn a_listed_game_account_still_needs_a_token() {
         let (state, _) = state();
         let state = Arc::new(AppState {

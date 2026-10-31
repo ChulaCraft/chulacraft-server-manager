@@ -38,6 +38,12 @@ authority. A request passes if either
   `mcsvctl` or `mcsv-console` must be listed by numeric uid, or those tools get
   401.
 
+A request that presents a token is judged by the token alone: a bad, expired or
+wrongly signed token is `401` even from root or a listed uid. Only requests
+with no token use the unix shortcut. Any relay that runs as root or as a listed
+uid (socat, an ssh socket forward, a root container with the socket mounted)
+connects as that uid and so hands full access to whoever can reach the relay.
+
 Anyone else gets `401` (no token, or a bad, expired or wrongly signed one).
 A valid token without the permission bit the route needs gets `403`. Both are
 logged to the journal with the path, peer uid and reason, never the token.
