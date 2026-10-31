@@ -26,6 +26,7 @@ rm -rf /etc/mcsv_manager/ /srv/minecraft/
 deluser --system mcsv-mgr
 deluser --system mcsv
 delgroup --system mcsv-mgr
+delgroup --system mcsv-http
 
 rm /etc/polkit-1/rules.d/mcsv-manager.rules
 

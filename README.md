@@ -22,25 +22,63 @@ Basic setup
 sudo bash scripts/setup.sh
 ```
 
-Auth: the socket is mode 0666, and a request passes if either
-- the connecting process is in group `mcsv-mgr` or `adm` and is not the
-  game-server user `mcsv` (checked with the kernel's peer credentials, so the
-  CLI tools in `src/bin` need no token), or
+Auth: the socket is mode 0660, group `mcsv-http`, so only members can connect
+(`setup.sh` creates the group and adds `www-data`, which Apache runs as, and
+`mcsv-mgr`; restart Apache afterwards). Add any operator who runs `mcsvctl` or
+`mcsv-console`, since both default to this socket. Being able to connect is not
+authority. A request passes if either
 - it carries a short-lived EdDSA token signed by chulacraft-web
   (`Authorization: Bearer <jwt>`; the console WebSocket sends it as the second
-  subprotocol, `mcsv.jwt, <jwt>`).
+  subprotocol, `mcsv.jwt, <jwt>`). A valid token always decides the request,
+  whoever connected, or
+- the connecting process is root or has a uid listed in `MCSV_TRUSTED_UIDS`
+  (checked with the kernel's peer credentials, so the CLI tools in `src/bin`
+  need no token). Group membership never counts, and the game-server user
+  `mcsv` never gets this shortcut, even if listed. Operators who use
+  `mcsvctl` or `mcsv-console` must be listed by numeric uid, or those tools get
+  401.
 
-Apache runs as `www-data`, which must not be in `mcsv-mgr` (setup.sh removes
-it), so web traffic always needs the token. Put the public key in `/etc/mcsv_manager/env`
-(mode 640, group `mcsv-mgr`); the manager refuses to start without it.
+Anyone else gets `401` (no token, or a bad, expired or wrongly signed one).
+A valid token without the permission bit the route needs gets `403`. Both are
+logged to the journal with the path, peer uid and reason, never the token.
+`/service*` and `/backups` answer errors as `{ "error": string }`; the older
+`/server*`, `/servers` and `/status` routes keep their empty bodies.
+
+Apache runs as `www-data`, which is in `mcsv-http` but is not listed in
+`MCSV_TRUSTED_UIDS`, so web traffic always needs the token. Put the public key
+and the trusted uids in `/etc/mcsv_manager/env` (mode 640, group `mcsv-mgr`);
+without the key the manager still starts, but only root and listed uids get in.
 
 ```bash
+MCSV_TRUSTED_UIDS=1000,1001
 MCSV_JWT_PUBLIC_KEY=MCowBQYDK2VwAyEAk93DZfic0O/8MgbLN0Avip9dMXbFjSS9m101UOBAGv8=
 ```
 
 The token's `permission` claim is a bitmask: 1 status, 2 logs, 4 console read,
-8 console write, 16 start, 32 stop, 64 restart. `cmd` (JSON body
+8 console write, 16 start, 32 stop, 64 restart, 128 backup read, 256 backup
+run, 512 update. `cmd` (JSON body
 `{"command": "..."}`), `start`, `stop` and `restart` are POST.
+
+## Development
+
+No Rust toolchain is needed on the host, only Docker. `scripts/dev-cargo.sh`
+builds `Dockerfile.dev` (Ubuntu 22.04, so release binaries run on any host with
+glibc 2.35 or newer) and runs cargo in it:
+
+```bash
+scripts/dev-cargo.sh test
+scripts/dev-cargo.sh test --features fake-backend
+scripts/dev-cargo.sh clippy --all-targets -- -D warnings
+scripts/dev-cargo.sh fmt --check
+```
+
+The `fake-backend` feature swaps systemd for an in-memory backend and reads
+`MCSV_FAKE_LISTEN` (`tcp:127.0.0.1:8080` or `unix:/path/to.sock`) instead of the
+socket-activated fd. It is for tests only: never install a binary built with it.
+
+- `tests/fake-smoke.sh`: the fake-backend binary answers over TCP with no D-Bus.
+- `tests/apache/run.sh`: real Apache proxying to a unix socket, checking 200,
+  401, 403 and the console WebSocket subprotocol.
 
 Minecraft server service template is at [config/systemd/system/minecraft@template.service](config/systemd/system/minecraft@template.service)
 

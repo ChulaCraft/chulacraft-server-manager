@@ -27,6 +27,8 @@ ProtectSystem=strict
 ReadOnlyPaths=/usr/local
 ProtectHome=true
 ReadWritePaths=/run
+# /var/lib/mcsv_manager, for metrics samples and backup requests.
+StateDirectory=mcsv_manager
 # CapabilityBoundingSet=
 # AmbientCapabilities=
 

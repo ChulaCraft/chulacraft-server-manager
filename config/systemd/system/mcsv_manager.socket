@@ -4,8 +4,12 @@ Description=Minecraft Server Manager API socket
 [Socket]
 ListenStream=/run/mcsv_manager.sock
 SocketUser=mcsv-mgr
-SocketGroup=mcsv-mgr
-SocketMode=0666
+# Only members of mcsv-http can even connect: www-data (Apache), mcsv-mgr, and
+# operators who run mcsvctl or mcsv-console. Being in the group is not
+# authority by itself: every request still needs a token, or a uid listed in
+# MCSV_TRUSTED_UIDS (root always is).
+SocketGroup=mcsv-http
+SocketMode=0660
 
 [Install]
 WantedBy=sockets.target

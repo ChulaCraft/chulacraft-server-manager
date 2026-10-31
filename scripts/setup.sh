@@ -6,9 +6,14 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 CONFIG_DIR="$SCRIPT_DIR/config"
 
 addgroup --system mcsv-mgr
+# Who may connect to the API socket. Connecting is not authority: see README.
+addgroup --system mcsv-http
 adduser --system --ingroup mcsv-mgr --no-create-home mcsv-mgr
 adduser --system --ingroup mcsv-mgr --no-create-home mcsv
 usermod -aG adm mcsv-mgr
+usermod -aG mcsv-http mcsv-mgr
+# Apache needs it to reach the socket; restart apache2 so it picks the group up.
+if id www-data > /dev/null 2>&1; then usermod -aG mcsv-http www-data; fi
 
 mkdir -p /srv/minecraft/instances /srv/minecraft/shared
 chown -R mcsv-mgr:mcsv-mgr /srv/minecraft

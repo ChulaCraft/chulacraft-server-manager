@@ -1,2 +1,6 @@
+# Numeric uids (comma separated) that may use the socket without a token, e.g.
+# the operators who run mcsvctl / mcsv-console. Root is always trusted. Group
+# membership never counts. Find a uid with `id -u <user>`.
+MCSV_TRUSTED_UIDS=
 # base64 Ed25519 public key
 MCSV_JWT_PUBLIC_KEY=
