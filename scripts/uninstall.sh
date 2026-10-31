@@ -1,9 +1,6 @@
-#/bin/bash
+#!/bin/bash
 
-set -e
-
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
-CONFIG_DIR="$SCRIPT_DIR/config"
+set -euo pipefail
 
 REMOVE_EVERYTHING=false
 if [[ " $* " == *" --remove-everything "* ]]; then
@@ -11,23 +8,21 @@ if [[ " $* " == *" --remove-everything "* ]]; then
   REMOVE_EVERYTHING=true
 fi
 
-systemctl stop mcsv_manager.socket
+systemctl stop mcsv_manager.socket mcsv_manager.service || true
 
-rm  /usr/lib/systemd/system/mcsv_manager.socket \
+rm -f /usr/lib/systemd/system/mcsv_manager.socket \
     /usr/lib/systemd/system/mcsv_manager.service \
     /usr/lib/systemd/system/minecraft@.socket \
     /usr/lib/tmpfiles.d/minecraft.conf
 
 systemctl daemon-reload
 
-if REMOVE_EVERYTHING; then
+if [ "$REMOVE_EVERYTHING" = true ]; then
+    rm -rf /etc/mcsv_manager/ /srv/minecraft/
+    deluser --system mcsv-mgr || true
+    deluser --system mcsv || true
+    delgroup --system mcsv-mgr || true
+    delgroup --system mcsv-http || true
 
-rm -rf /etc/mcsv_manager/ /srv/minecraft/
-deluser --system mcsv-mgr
-deluser --system mcsv
-delgroup --system mcsv-mgr
-delgroup --system mcsv-http
-
-rm /etc/polkit-1/rules.d/mcsv-manager.rules
-
+    rm -f /etc/polkit-1/rules.d/mcsv-manager.rules
 fi
