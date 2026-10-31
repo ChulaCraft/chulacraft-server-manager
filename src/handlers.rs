@@ -262,11 +262,16 @@ pub async fn handle_server_command(
     let cmd = body.command;
     if let Some(c) = auth.claims() {
         println!(
-            "Received command for {} from {} (jti {}): {}",
+            "Received command for {:?} from {:?} (jti {:?}): {:?}",
             id, c.sub, c.jti, cmd
         );
     } else {
-        println!("Received command for {}: {}", id, cmd);
+        println!(
+            "Received command for {:?} via peer uid {:?}: {:?}",
+            id,
+            auth.peer_uid(),
+            cmd
+        );
     }
     let cmd = if !cmd.ends_with('\n') {
         cmd.to_string() + "\n"
@@ -290,11 +295,16 @@ pub async fn handle_server_action(
     })?;
     if let Some(c) = auth.claims() {
         println!(
-            "server action {} to {} from {} (jti {})",
+            "server action {} to {:?} from {:?} (jti {:?})",
             action, id, c.sub, c.jti
         );
     } else {
-        println!("server action {} to {}", action, id);
+        println!(
+            "server action {} to {:?} via peer uid {:?}",
+            action,
+            id,
+            auth.peer_uid()
+        );
     }
     match action.as_str() {
         "start" => state.backend.start_server(&id).await?,
@@ -391,11 +401,16 @@ pub async fn handle_server_console_socket(
                     let cmd = inmsg.index("command").as_str().unwrap_or("");
                     if let Some(c) = auth.claims() {
                         println!(
-                            "Received command for {} from {} (jti {}): {}",
+                            "Received command for {:?} from {:?} (jti {:?}): {:?}",
                             name, c.sub, c.jti, cmd
                         );
                     } else {
-                        println!("Received command for {}: {}", name, cmd);
+                        println!(
+                            "Received command for {:?} via peer uid {:?}: {:?}",
+                            name,
+                            auth.peer_uid(),
+                            cmd
+                        );
                     }
                     let cmd = if !cmd.ends_with('\n') {
                         cmd.to_string() + "\n"

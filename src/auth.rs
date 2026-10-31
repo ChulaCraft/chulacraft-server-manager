@@ -262,6 +262,11 @@ impl Auth {
         ))
     }
 
+    /// Uid of the connecting process, when the transport has one (unix socket).
+    pub fn peer_uid(&self) -> Option<u32> {
+        self.peer_uid
+    }
+
     pub fn claims(&self) -> Option<&Claims> {
         match &self.identity {
             Identity::Claims(c) => Some(c),
