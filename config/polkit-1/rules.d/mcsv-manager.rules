@@ -1,4 +1,4 @@
-// mcsv-mgr may manage only the Minecraft and update instance units. Keep the
+// mcsv-mgr may manage only the Minecraft, update and backup instance units. Keep the
 // patterns in step with allowed_unit() in src/backend.rs.
 polkit.addRule(function(action, subject) {
     if (action.id == "org.freedesktop.systemd1.manage-units" &&
@@ -6,7 +6,8 @@ polkit.addRule(function(action, subject) {
         var unit = action.lookup("unit");
         if (unit &&
             (/^minecraft@[A-Za-z0-9_-]+\.service$/.test(unit) ||
-             /^chulacraft-update@[A-Za-z0-9_-]+\.service$/.test(unit))) {
+             /^chulacraft-update@[A-Za-z0-9_-]+\.service$/.test(unit) ||
+             /^chulacraft-backup@[A-Za-z0-9_-]+\.service$/.test(unit))) {
             return polkit.Result.YES;
         }
     }

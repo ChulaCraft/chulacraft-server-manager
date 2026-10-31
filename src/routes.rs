@@ -316,7 +316,13 @@ mod tests {
                 post(path)
             };
             let right = send(&state, call.token(bit)).await.0;
-            assert_eq!(right, StatusCode::NOT_IMPLEMENTED, "{method} {path}");
+            // /backups is implemented (T2.9): an empty POST body is a 400.
+            let expected = match (method, path) {
+                ("GET", "/backups") => StatusCode::OK,
+                ("POST", "/backups") => StatusCode::BAD_REQUEST,
+                _ => StatusCode::NOT_IMPLEMENTED,
+            };
+            assert_eq!(right, expected, "{method} {path}");
         }
         let (status, _, body) = send(&state, post("/service/a/explode").token(0x3ff)).await;
         assert_eq!(status, StatusCode::NOT_FOUND);

@@ -13,21 +13,23 @@ use crate::{
     systemd1::{Process, Systemd1, UnitStatus},
 };
 
-/// Units the manager may start: `minecraft@<name>.service` and
-/// `chulacraft-update@<name>.service`, with `<name>` of `[A-Za-z0-9_-]+`. Keep in
+/// Units the manager may start: `minecraft@<name>.service`,
+/// `chulacraft-update@<name>.service` and `chulacraft-backup@<target>.service`, with `<name>` of `[A-Za-z0-9_-]+`. Keep in
 /// step with `config/polkit-1/rules.d/mcsv-manager.rules`, which enforces the same
 /// pattern on the host.
 pub fn allowed_unit(unit: &str) -> bool {
-    ["minecraft@", "chulacraft-update@"].iter().any(|prefix| {
-        unit.strip_prefix(prefix)
-            .and_then(|rest| rest.strip_suffix(".service"))
-            .is_some_and(|name| {
-                !name.is_empty()
-                    && name
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-            })
-    })
+    ["minecraft@", "chulacraft-update@", "chulacraft-backup@"]
+        .iter()
+        .any(|prefix| {
+            unit.strip_prefix(prefix)
+                .and_then(|rest| rest.strip_suffix(".service"))
+                .is_some_and(|name| {
+                    !name.is_empty()
+                        && name
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                })
+        })
 }
 
 fn refuse_unit(unit: &str) -> AppError {
@@ -435,6 +437,7 @@ mod tests {
             "minecraft@survival.service",
             "minecraft@Sky_Block-2.service",
             "chulacraft-update@bot.service",
+            "chulacraft-backup@world.service",
         ] {
             assert!(allowed_unit(ok), "{ok}");
         }
