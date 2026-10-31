@@ -56,15 +56,24 @@ impl std::fmt::Debug for Jwt {
 impl Jwt {
     /// `MCSV_JWT_PUBLIC_KEY`: an Ed25519 public key, as PEM or as the one-line
     /// base64 body of one (easier to put in a systemd EnvironmentFile).
-    pub fn from_env() -> Result<Self, io::Error> {
-        let raw = std::env::var("MCSV_JWT_PUBLIC_KEY").map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "MCSV_JWT_PUBLIC_KEY is required: the manager refuses to run without auth",
-            )
-        })?;
+    /// Unset or empty is `Ok(None)`: the manager then serves root and trusted uids only.
+    /// Set but unusable is an error, so a typo can't quietly drop token auth.
+    pub fn from_env() -> Result<Option<Self>, io::Error> {
+        match std::env::var("MCSV_JWT_PUBLIC_KEY") {
+            // The shipped env file has `MCSV_JWT_PUBLIC_KEY=` with no value.
+            Ok(raw) if raw.trim().is_empty() => Ok(None),
+            Ok(raw) => Self::from_key_text(&raw).map(Some),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(std::env::VarError::NotUnicode(_)) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "MCSV_JWT_PUBLIC_KEY is not valid UTF-8",
+            )),
+        }
+    }
+
+    fn from_key_text(raw: &str) -> Result<Self, io::Error> {
         let pem = if raw.contains("-----BEGIN") {
-            raw
+            raw.to_string()
         } else {
             format!(
                 "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----\n",
@@ -75,7 +84,7 @@ impl Jwt {
             DecodingKey::from_ed_pem(pem.as_bytes()).map_err(|_| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "MCSV_JWT_PUBLIC_KEY is not an Ed25519 public key",
+                    "MCSV_JWT_PUBLIC_KEY is set but is not an Ed25519 public key",
                 )
             })?,
         ))
@@ -364,6 +373,19 @@ pub(crate) mod testkit {
 mod tests {
     use super::testkit::*;
     use super::*;
+
+    #[test]
+    fn an_unparseable_key_is_an_error_not_a_missing_key() {
+        for bad in [
+            "not a key",
+            "-----BEGIN PUBLIC KEY-----\nzzzz\n-----END PUBLIC KEY-----",
+        ] {
+            assert!(Jwt::from_key_text(bad).is_err(), "{bad:?}");
+        }
+        let good = "MCowBQYDK2VwAyEA2xUoKv6AN4BdDOL3w4jdT5//wM21JOJqtKniJe6nQ7c=";
+        let jwt = Jwt::from_key_text(good).unwrap();
+        assert!(jwt.verify(&sign(claims(now() + 60, 1))).is_some());
+    }
 
     #[test]
     fn accepts_a_valid_token() {

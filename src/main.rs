@@ -63,12 +63,14 @@ fn systemd_socket() -> UnixListener {
 #[tokio::main]
 async fn main() {
     let backend = backend().await;
+    let jwt = auth::Jwt::from_env().unwrap_or_else(|e| panic!("{e}"));
+    if jwt.is_none() {
+        eprintln!("warning: MCSV_JWT_PUBLIC_KEY is not set: only root and trusted uids get in");
+    }
     let state = Arc::new(AppState {
         backend: backend.clone(),
         config: Config::from_env().unwrap_or_else(|e| panic!("{e}")),
-        jwt: auth::Jwt::from_env()
-            .inspect_err(|e| eprintln!("warning: Jwt not initialized: {}", e))
-            .ok(),
+        jwt,
         trusted_uids: auth::trusted_uids_from_env().unwrap_or_else(|e| panic!("{e}")),
         game_uid: auth::game_uid(),
     });
