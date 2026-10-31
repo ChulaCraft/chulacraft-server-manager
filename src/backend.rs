@@ -13,6 +13,31 @@ use crate::{
     systemd1::{Process, Systemd1, UnitStatus},
 };
 
+/// Units the manager may start: `minecraft@<name>.service` and
+/// `chulacraft-update@<name>.service`, with `<name>` of `[A-Za-z0-9_-]+`. Keep in
+/// step with `config/polkit-1/rules.d/mcsv-manager.rules`, which enforces the same
+/// pattern on the host.
+pub fn allowed_unit(unit: &str) -> bool {
+    ["minecraft@", "chulacraft-update@"].iter().any(|prefix| {
+        unit.strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(".service"))
+            .is_some_and(|name| {
+                !name.is_empty()
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            })
+    })
+}
+
+fn refuse_unit(unit: &str) -> AppError {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!("unit not allowed: {unit:?}"),
+    )
+    .into()
+}
+
 /// Live and historical log lines of one service.
 pub trait LogSource: Send + Sync + Debug {
     fn name(&self) -> &str;
@@ -154,6 +179,9 @@ impl ServiceBackend for SystemdBackend {
     }
 
     async fn start_unit(&self, unit: &str) -> Result<(), AppError> {
+        if !allowed_unit(unit) {
+            return Err(refuse_unit(unit));
+        }
         self.dbus.start_unit(unit, "replace").await?;
         Ok(())
     }
@@ -368,6 +396,9 @@ mod fake {
         }
 
         async fn start_unit(&self, unit: &str) -> Result<(), AppError> {
+            if !allowed_unit(unit) {
+                return Err(refuse_unit(unit));
+            }
             self.record(format!("unit {unit}"));
             self.active_units.lock().unwrap().insert(unit.to_string());
             Ok(())
@@ -391,5 +422,55 @@ mod fake {
         async fn reload(&self) -> Result<(), AppError> {
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allowed_units_are_minecraft_and_update_instances_only() {
+        for ok in [
+            "minecraft@survival.service",
+            "minecraft@Sky_Block-2.service",
+            "chulacraft-update@bot.service",
+        ] {
+            assert!(allowed_unit(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "ssh.service",
+            "minecraft@.service",
+            "minecraft@a.b.service",
+            "minecraft@a/b.service",
+            "minecraft@a b.service",
+            "minecraft@a\n.service",
+            "minecraft@survival.socket",
+            "minecraft@survival.service ",
+            "xminecraft@survival.service",
+            "chulacraft-update@.service",
+            "chulacraft-update.service",
+            "minecraft@..service",
+            "minecraft@survival.service.service",
+        ] {
+            assert!(!allowed_unit(bad), "{bad:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_fake_backend_refuses_other_units() {
+        let backend = FakeBackend::new(&[]);
+        assert!(backend.start_unit("ssh.service").await.is_err());
+        assert!(
+            backend
+                .start_unit("chulacraft-update@bot.service")
+                .await
+                .is_ok()
+        );
+        assert_eq!(
+            *backend.calls.lock().unwrap(),
+            vec!["unit chulacraft-update@bot.service"]
+        );
     }
 }
