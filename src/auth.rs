@@ -1,9 +1,18 @@
-use std::{ffi::CString, io, os::fd::{AsRawFd, RawFd}, sync::Arc};
+use std::{
+    ffi::CString,
+    io,
+    os::fd::{AsRawFd, RawFd},
+    sync::Arc,
+};
 
-use axum::{extract::{ConnectInfo, FromRequestParts, connect_info::Connected}, http::{HeaderMap, header, request::Parts}, serve::IncomingStream};
+use axum::{
+    extract::{ConnectInfo, FromRequestParts, connect_info::Connected},
+    http::{HeaderMap, header, request::Parts},
+    serve::IncomingStream,
+};
 use http_unix_client::StatusCode;
-use tokio::net::{UnixListener, UnixStream};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
+use tokio::net::{UnixListener, UnixStream};
 
 use crate::{AppState, handlers::AppError};
 
@@ -28,7 +37,7 @@ pub const WS_PROTOCOL: &str = "mcsv.jwt";
 /// must not be in them) needs a JWT.
 pub const UNIX_GROUPS: [(&str, PermissionBits); 2] = [
     ("mcsv-mgr", u32::MAX),
-    ("adm", STATUS | LOGS | CONSOLE_READ)
+    ("adm", STATUS | LOGS | CONSOLE_READ),
 ];
 
 /// The game servers run as this user, which is also in mcsv-mgr. A plugin must
@@ -59,15 +68,28 @@ impl Jwt {
     /// `MCSV_JWT_PUBLIC_KEY`: an Ed25519 public key, as PEM or as the one-line
     /// base64 body of one (easier to put in a systemd EnvironmentFile).
     pub fn from_env() -> Result<Self, io::Error> {
-        let raw = std::env::var("MCSV_JWT_PUBLIC_KEY")
-            .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "MCSV_JWT_PUBLIC_KEY is required: the manager refuses to run without auth"))?;
+        let raw = std::env::var("MCSV_JWT_PUBLIC_KEY").map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "MCSV_JWT_PUBLIC_KEY is required: the manager refuses to run without auth",
+            )
+        })?;
         let pem = if raw.contains("-----BEGIN") {
             raw
         } else {
-            format!("-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----\n", raw.trim())
+            format!(
+                "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----\n",
+                raw.trim()
+            )
         };
-        Ok(Self::new(DecodingKey::from_ed_pem(pem.as_bytes())
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "MCSV_JWT_PUBLIC_KEY is not an Ed25519 public key"))?))
+        Ok(Self::new(
+            DecodingKey::from_ed_pem(pem.as_bytes()).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "MCSV_JWT_PUBLIC_KEY is not an Ed25519 public key",
+                )
+            })?,
+        ))
     }
 
     pub fn new(key: DecodingKey) -> Self {
@@ -81,18 +103,23 @@ impl Jwt {
     }
 
     pub fn verify(&self, token: &str) -> Option<Claims> {
-        decode::<Claims>(token, &self.key, &self.validation).ok().map(|data| data.claims)
+        decode::<Claims>(token, &self.key, &self.validation)
+            .ok()
+            .map(|data| data.claims)
     }
 }
 
 /// Group ids for `UNIX_GROUPS`; groups missing on this host are skipped.
 /// Call once at startup: getgrnam isn't thread-safe.
 pub fn unix_gids() -> Vec<(u32, PermissionBits)> {
-    UNIX_GROUPS.iter().filter_map(|(name, perm)| {
-        let name = CString::new(*name).ok()?;
-        let group = unsafe { libc::getgrnam(name.as_ptr()) };
-        (!group.is_null()).then(|| unsafe { ((*group).gr_gid, *perm) })
-    }).collect()
+    UNIX_GROUPS
+        .iter()
+        .filter_map(|(name, perm)| {
+            let name = CString::new(*name).ok()?;
+            let group = unsafe { libc::getgrnam(name.as_ptr()) };
+            (!group.is_null()).then(|| unsafe { ((*group).gr_gid, *perm) })
+        })
+        .collect()
 }
 
 /// Uid of `GAME_USER`, if it exists. Same startup-only rule as `unix_gids`.
@@ -115,7 +142,10 @@ impl Peer {
         let cred = stream.peer_cred().ok();
         let mut groups = peer_groups(stream.as_raw_fd());
         groups.extend(cred.map(|c| c.gid()));
-        Peer { uid: cred.map(|c| c.uid()), groups }
+        Peer {
+            uid: cred.map(|c| c.uid()),
+            groups,
+        }
     }
 }
 
@@ -131,9 +161,19 @@ fn peer_groups(fd: RawFd) -> Vec<u32> {
     let mut groups = vec![0 as libc::gid_t; 256];
     let mut len = (groups.len() * size_of::<libc::gid_t>()) as libc::socklen_t;
     let ok = unsafe {
-        libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_PEERGROUPS, groups.as_mut_ptr().cast(), &mut len)
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_PEERGROUPS,
+            groups.as_mut_ptr().cast(),
+            &mut len,
+        )
     } == 0;
-    groups.truncate(if ok { len as usize / size_of::<libc::gid_t>() } else { 0 });
+    groups.truncate(if ok {
+        len as usize / size_of::<libc::gid_t>()
+    } else {
+        0
+    });
     groups
 }
 
@@ -146,9 +186,9 @@ fn unix_auth(peer: &Peer, gids: &[(u32, PermissionBits)], game_uid: Option<u32>)
         return Some(Auth::Bypass);
     }
 
-    let perm = gids.iter().fold(0u32, |acc, (g, p)|
+    let perm = gids.iter().fold(0u32, |acc, (g, p)| {
         (if peer.groups.contains(g) { *p } else { 0u32 }) + acc
-    );
+    });
     Some(Auth::Claims(Claims {
         sub: format!("uid {uid}"),
         jti: "unix".into(),
@@ -157,12 +197,17 @@ fn unix_auth(peer: &Peer, gids: &[(u32, PermissionBits)], game_uid: Option<u32>)
 }
 
 fn token(headers: &HeaderMap) -> Option<&str> {
-    if let Some(value) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
+    if let Some(value) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    {
         return value.strip_prefix("Bearer ");
     }
     let protocols = headers.get(header::SEC_WEBSOCKET_PROTOCOL)?.to_str().ok()?;
     let mut parts = protocols.split(',').map(str::trim);
-    if parts.next()? != WS_PROTOCOL { return None; }
+    if parts.next()? != WS_PROTOCOL {
+        return None;
+    }
     parts.next()
 }
 
@@ -171,7 +216,7 @@ fn token(headers: &HeaderMap) -> Option<&str> {
 pub enum Auth {
     Claims(Claims),
     Bypass,
-    None
+    None,
 }
 
 impl Auth {
@@ -180,14 +225,18 @@ impl Auth {
     }
 
     pub fn require(&self, bits: PermissionBits) -> Result<(), AppError> {
-        if self.has(bits) { Ok(()) } else { Err(AppError::Api(StatusCode::FORBIDDEN.into())) }
+        if self.has(bits) {
+            Ok(())
+        } else {
+            Err(AppError::Api(StatusCode::FORBIDDEN.into()))
+        }
     }
-    
+
     pub fn get_permission(&self) -> PermissionBits {
         match self {
             Self::Claims(c) => c.permission,
             Self::Bypass => u32::MAX,
-            Self::None => 0
+            Self::None => 0,
         }
     }
 }
@@ -195,13 +244,21 @@ impl Auth {
 impl FromRequestParts<Arc<AppState>> for Auth {
     type Rejection = AppError;
 
-    async fn from_request_parts(parts: &mut Parts, state: &Arc<AppState>) -> Result<Self, AppError> {
-        if let Some(auth) = parts.extensions.get::<ConnectInfo<Peer>>().and_then(|ConnectInfo(p)| unix_auth(p, &state.unix_gids, state.game_uid)) {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Self, AppError> {
+        if let Some(auth) = parts
+            .extensions
+            .get::<ConnectInfo<Peer>>()
+            .and_then(|ConnectInfo(p)| unix_auth(p, &state.unix_gids, state.game_uid))
+        {
             return Ok(auth);
         }
         Ok(token(&parts.headers)
             .and_then(|t| state.jwt.as_ref().and_then(|j| j.verify(t)))
-            .map(Auth::Claims).unwrap_or(Self::None))
+            .map(Auth::Claims)
+            .unwrap_or(Self::None))
     }
 }
 
@@ -215,7 +272,10 @@ mod tests {
     const PUBLIC: &str = "MCowBQYDK2VwAyEA2xUoKv6AN4BdDOL3w4jdT5//wM21JOJqtKniJe6nQ7c=";
 
     fn now() -> u64 {
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
     }
 
     fn jwt() -> Jwt {
@@ -224,7 +284,12 @@ mod tests {
     }
 
     fn sign(claims: serde_json::Value) -> String {
-        encode(&Header::new(Algorithm::EdDSA), &claims, &EncodingKey::from_ed_pem(PRIVATE.as_bytes()).unwrap()).unwrap()
+        encode(
+            &Header::new(Algorithm::EdDSA),
+            &claims,
+            &EncodingKey::from_ed_pem(PRIVATE.as_bytes()).unwrap(),
+        )
+        .unwrap()
     }
 
     fn claims(exp: u64) -> serde_json::Value {
@@ -251,9 +316,17 @@ mod tests {
         let forged = sign(serde_json::json!({ "permission": 2147483647 }));
         let forged_payload = forged.split('.').nth(1).unwrap();
         let header = head.split('.').next().unwrap();
-        assert!(jwt().verify(&format!("{header}.{forged_payload}.{sig}")).is_none());
+        assert!(
+            jwt()
+                .verify(&format!("{header}.{forged_payload}.{sig}"))
+                .is_none()
+        );
         // alg=none must never verify.
-        assert!(jwt().verify(&format!("eyJhbGciOiJub25lIn0.{forged_payload}.")).is_none());
+        assert!(
+            jwt()
+                .verify(&format!("eyJhbGciOiJub25lIn0.{forged_payload}."))
+                .is_none()
+        );
     }
 
     #[test]
@@ -261,7 +334,10 @@ mod tests {
         // chulacraft-web's mintToken() with the test key above, expiring in 2099.
         let token = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjaHVsYWNyYWZ0LXdlYiIsImF1ZCI6Im1jc3YtbWFuYWdlciIsInN1YiI6IktyaXNhbmFwb24iLCJqdGkiOiJ3ZWItMSIsImlhdCI6NDA3MDkwODgwMCwiZXhwIjo0MDcwOTA4ODYwLCJwZXJtaXNzaW9uIjoyMTQ3NDgzNjQ3fQ.PEnqWquAZp_WFYf1FJM_p6TPV1yTAMy2k2w-W0n27vWb-bLCZxFUwdV4nFTolqvjs4WPDxVKBesGNZexJ3syAg";
         let c = jwt().verify(token).unwrap();
-        assert_eq!((c.sub.as_str(), c.jti.as_str(), c.permission), ("Krisanapon", "web-1", 2147483647));
+        assert_eq!(
+            (c.sub.as_str(), c.jti.as_str(), c.permission),
+            ("Krisanapon", "web-1", 2147483647)
+        );
     }
 
     #[tokio::test]
@@ -273,9 +349,19 @@ mod tests {
         assert!(peer.groups.contains(&me));
         let auth = unix_auth(&peer, &[(me, u32::MAX)], None).unwrap();
         assert!(auth.has(u32::MAX));
-        assert!(unix_auth(&peer, &[(u32::MAX - 1, 0)], None).unwrap().get_permission() == 0);
+        assert!(
+            unix_auth(&peer, &[(u32::MAX - 1, 0)], None)
+                .unwrap()
+                .get_permission()
+                == 0
+        );
         // The game-server account never skips the token, whatever its groups.
-        assert!(unix_auth(&peer, &[(me, u32::MAX)], peer.uid).unwrap().get_permission() == 0);
+        assert!(
+            unix_auth(&peer, &[(me, u32::MAX)], peer.uid)
+                .unwrap()
+                .get_permission()
+                == 0
+        );
     }
 
     #[test]
@@ -284,7 +370,10 @@ mod tests {
         headers.insert(header::AUTHORIZATION, "Bearer abc".parse().unwrap());
         assert_eq!(token(&headers), Some("abc"));
         let mut headers = HeaderMap::new();
-        headers.insert(header::SEC_WEBSOCKET_PROTOCOL, "mcsv.jwt, abc".parse().unwrap());
+        headers.insert(
+            header::SEC_WEBSOCKET_PROTOCOL,
+            "mcsv.jwt, abc".parse().unwrap(),
+        );
         assert_eq!(token(&headers), Some("abc"));
         headers.insert(header::SEC_WEBSOCKET_PROTOCOL, "chat, abc".parse().unwrap());
         assert_eq!(token(&headers), None);

@@ -1,16 +1,20 @@
 use axum::{
+    Router,
     routing::{get, post},
-    Router
 };
 use std::{os::unix::io::FromRawFd, sync::Arc};
-use tokio::{net::UnixListener, signal::unix::{SignalKind, signal}, sync::Mutex};
+use tokio::{
+    net::UnixListener,
+    signal::unix::{SignalKind, signal},
+    sync::Mutex,
+};
 
 mod auth;
 mod handlers;
-mod systemd1;
 mod mcsv_mgr;
 mod models;
-use systemd1::{Systemd1};
+mod systemd1;
+use systemd1::Systemd1;
 
 use crate::mcsv_mgr::McsvManager;
 
@@ -20,7 +24,7 @@ pub struct AppState {
     pub mcsv_mgr: Arc<Mutex<McsvManager>>,
     pub jwt: Option<auth::Jwt>,
     pub unix_gids: Vec<(u32, auth::PermissionBits)>,
-    pub game_uid: Option<u32>
+    pub game_uid: Option<u32>,
 }
 
 #[tokio::main]
@@ -29,9 +33,11 @@ async fn main() {
     let app_state = Arc::new(AppState {
         dbus: dbus.clone(),
         mcsv_mgr: Arc::new(Mutex::new(McsvManager::new(dbus.clone()))),
-        jwt: auth::Jwt::from_env().inspect_err(|e| eprintln!("warning: Jwt not initialized: {}", e)).ok(),
+        jwt: auth::Jwt::from_env()
+            .inspect_err(|e| eprintln!("warning: Jwt not initialized: {}", e))
+            .ok(),
         unix_gids: auth::unix_gids(),
-        game_uid: auth::game_uid()
+        game_uid: auth::game_uid(),
     });
 
     let signal_state = app_state.clone();
@@ -50,7 +56,10 @@ async fn main() {
         .route("/server/{id}/rlog", get(handlers::get_server_rlog))
         // POST, so a link or prefetch can never fire them.
         .route("/server/{id}/cmd", post(handlers::handle_server_command))
-        .route("/server/{id}/{action}", post(handlers::handle_server_action))
+        .route(
+            "/server/{id}/{action}",
+            post(handlers::handle_server_action),
+        )
         .with_state(app_state.clone());
 
     let std_listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(0) };
@@ -60,9 +69,11 @@ async fn main() {
     println!("Minecraft Server Manager listening on Systemd socket...");
 
     axum::serve(
-        listener, 
-        app.into_make_service_with_connect_info::<auth::Peer>()
-    ).await.unwrap();
+        listener,
+        app.into_make_service_with_connect_info::<auth::Peer>(),
+    )
+    .await
+    .unwrap();
 }
 
 async fn handle_signals(state: Arc<AppState>) {
@@ -74,7 +85,7 @@ async fn handle_signals(state: Arc<AppState>) {
         println!("Received SIGHUP: Reloading configuration...");
 
         state.mcsv_mgr.lock().await.update().await.unwrap();
-        
+
         println!("Reload complete.");
     }
 }
