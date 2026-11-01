@@ -70,9 +70,12 @@ impl ServiceConfig {
 pub struct BackupsConfig {
     /// `HH:MM`, host local time.
     pub nightly_at: Option<String>,
-    /// Per target.
-    #[serde(default = "default_keep")]
-    pub keep: u32,
+    /// Daily archives kept per target. `keep` is the deprecated name.
+    #[serde(default = "default_keep_daily", alias = "keep")]
+    pub keep_daily: u32,
+    /// Weekly archives kept per target.
+    #[serde(default = "default_keep_weekly")]
+    pub keep_weekly: u32,
     pub world_dir: Option<PathBuf>,
     pub supabase_dump_cmd: Option<String>,
     /// Instance names (`minecraft@<name>`) whose worlds the `world` target covers.
@@ -80,8 +83,12 @@ pub struct BackupsConfig {
     pub world_instances: Vec<String>,
 }
 
-fn default_keep() -> u32 {
+fn default_keep_daily() -> u32 {
     7
+}
+
+fn default_keep_weekly() -> u32 {
+    4
 }
 
 pub fn valid_id(id: &str) -> bool {
@@ -153,8 +160,12 @@ impl Config {
             }
         }
         if let Some(b) = &self.backups {
-            if b.keep == 0 {
-                return Err(invalid("config: backups.keep must be at least 1".into()));
+            for (name, n) in [("keep_daily", b.keep_daily), ("keep_weekly", b.keep_weekly)] {
+                if n == 0 {
+                    return Err(invalid(format!(
+                        "config: backups.{name} must be at least 1"
+                    )));
+                }
             }
             if let Some(t) = &b.nightly_at {
                 let ok = t.split_once(':').is_some_and(|(h, m)| {
@@ -200,7 +211,8 @@ compose_service = "bot"
 
 [backups]
 nightly_at = "04:00"
-keep = 7
+keep_daily = 7
+keep_weekly = 4
 world_dir = "/srv/minecraft/data"
 supabase_dump_cmd = "pg_dump ..."
 world_instances = ["survival"]
@@ -222,7 +234,10 @@ world_instances = ["survival"]
             vec![Action::Start, Action::Stop, Action::Restart]
         );
         let b = c.backups.unwrap();
-        assert_eq!((b.keep, b.nightly_at.as_deref()), (7, Some("04:00")));
+        assert_eq!(
+            (b.keep_daily, b.keep_weekly, b.nightly_at.as_deref()),
+            (7, 4, Some("04:00"))
+        );
         assert_eq!(b.world_instances, vec!["survival"]);
     }
 
@@ -279,11 +294,19 @@ world_instances = ["survival"]
 
     #[test]
     fn backup_settings_are_checked() {
-        assert_eq!(
-            Config::parse("[backups]\n").unwrap().backups.unwrap().keep,
-            7
-        );
+        let d = Config::parse("[backups]\n").unwrap().backups.unwrap();
+        assert_eq!((d.keep_daily, d.keep_weekly), (7, 4));
+        assert!(err("[backups]\nkeep_daily=0\n").contains("keep_daily"));
+        assert!(err("[backups]\nkeep_weekly=0\n").contains("keep_weekly"));
+        // deprecated alias for keep_daily; both at once is a duplicate field
+        let old = Config::parse("[backups]\nkeep=3\n")
+            .unwrap()
+            .backups
+            .unwrap();
+        assert_eq!(old.keep_daily, 3);
         assert!(err("[backups]\nkeep=0\n").contains("keep"));
+        assert!(err("[backups]\nkeep=3\nkeep_daily=3\n").contains("duplicate"));
+        assert!(err("[backups]\nkeep_dayly=3\n").contains("keep_dayly"));
         for bad in ["4:00", "24:00", "04:60", "0400", "ab:cd"] {
             assert!(
                 err(&format!("[backups]\nnightly_at='{bad}'\n")).contains("HH:MM"),
