@@ -969,12 +969,58 @@ pub mod proxy {
 }
 
 #[cfg(test)]
+pub mod test_support {
+    use std::path::{Path, PathBuf};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::UnixListener,
+    };
+
+    /// Serves `routes` (path-with-query -> (status, content type, body)) on a unix socket.
+    pub async fn fake_socket(
+        dir: &Path,
+        routes: Vec<(&'static str, u16, &'static str, Vec<u8>)>,
+    ) -> PathBuf {
+        let path = dir.join("docker.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut s, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = vec![0u8; 4096];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let line = head.lines().next().unwrap_or("").to_string();
+                let target = line.split(' ').nth(1).unwrap_or("").to_string();
+                let found = routes.iter().find(|r| r.0 == target);
+                let (status, ct, body) = match found {
+                    Some((_, st, ct, b)) => (*st, *ct, b.clone()),
+                    None => (404, "application/json", b"{}".to_vec()),
+                };
+                let mut out =
+                    format!("HTTP/1.0 {status} X\r\nContent-Type: {ct}\r\n\r\n").into_bytes();
+                out.extend(body);
+                let _ = s.write_all(&out).await;
+            }
+        });
+        path
+    }
+
+    pub fn tmpdir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("t27-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::{collections::HashMap as Map, sync::Arc};
 
-    use tokio::net::UnixListener;
-
     use super::proxy::*;
+    use super::test_support::{fake_socket, tmpdir};
     use super::*;
 
     // ---- allow / deny table -------------------------------------------------
@@ -1278,44 +1324,6 @@ mod tests {
     }
 
     // ---- client against a fake proxy ------------------------------------------
-
-    /// Serves `routes` (path-with-query -> (status, content type, body)) on a unix socket.
-    async fn fake_socket(
-        dir: &Path,
-        routes: Vec<(&'static str, u16, &'static str, Vec<u8>)>,
-    ) -> PathBuf {
-        let path = dir.join("docker.sock");
-        let listener = UnixListener::bind(&path).unwrap();
-        tokio::spawn(async move {
-            loop {
-                let Ok((mut s, _)) = listener.accept().await else {
-                    return;
-                };
-                let mut buf = vec![0u8; 4096];
-                let n = s.read(&mut buf).await.unwrap_or(0);
-                let head = String::from_utf8_lossy(&buf[..n]).to_string();
-                let line = head.lines().next().unwrap_or("").to_string();
-                let target = line.split(' ').nth(1).unwrap_or("").to_string();
-                let found = routes.iter().find(|r| r.0 == target);
-                let (status, ct, body) = match found {
-                    Some((_, st, ct, b)) => (*st, *ct, b.clone()),
-                    None => (404, "application/json", b"{}".to_vec()),
-                };
-                let mut out =
-                    format!("HTTP/1.0 {status} X\r\nContent-Type: {ct}\r\n\r\n").into_bytes();
-                out.extend(body);
-                let _ = s.write_all(&out).await;
-            }
-        });
-        path
-    }
-
-    fn tmpdir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("t27-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
-    }
 
     fn jb(v: Value) -> Vec<u8> {
         v.to_string().into_bytes()

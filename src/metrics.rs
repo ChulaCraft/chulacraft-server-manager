@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     backend::ServiceBackend,
     config::{Backend, Config, ServiceConfig},
+    docker::{self, DockerClient},
     handlers::AppError,
     state::AppState,
 };
@@ -346,9 +347,42 @@ pub async fn read_service(
 /// Cumulative CPU reading per service: (unix seconds, cpu usec).
 pub type Prev = HashMap<String, (i64, u64)>;
 
+/// Samples one docker service; a failure is logged and leaves other services alone.
+async fn sample_docker(
+    docker: &DockerClient,
+    svc: &ServiceConfig,
+    store: &Store,
+    now: i64,
+) -> bool {
+    let Some(container) = svc.container.as_deref() else {
+        return false;
+    };
+    match docker.status(container).await {
+        Ok(st) => {
+            let up = st.state == "up";
+            store.record(
+                &svc.id,
+                Sample {
+                    t: bucket(now),
+                    cpu_pct: if up { st.cpu_pct } else { 0.0 },
+                    mem_bytes: if up { st.mem_bytes } else { 0 },
+                    up,
+                },
+            );
+            true
+        }
+        Err(e) => {
+            eprintln!("metrics: skipping {:?}: {e}", svc.id);
+            false
+        }
+    }
+}
+
 /// One sampling round. A service that fails is skipped and logged; the others still get theirs.
+#[allow(clippy::too_many_arguments)]
 pub async fn sample_all(
     backend: &dyn ServiceBackend,
+    docker: &DockerClient,
     config: &Config,
     store: &Store,
     prev: &mut Prev,
@@ -358,6 +392,12 @@ pub async fn sample_all(
 ) -> usize {
     let mut recorded = 0;
     for svc in &config.services {
+        if svc.backend == Backend::Docker {
+            if sample_docker(docker, svc, store, now).await {
+                recorded += 1;
+            }
+            continue;
+        }
         let Some(instance) = instance_of(svc) else {
             continue;
         };
@@ -426,6 +466,7 @@ pub fn ensure_started(state: &Arc<AppState>) -> Arc<Store> {
                     let now = chrono::Utc::now().timestamp();
                     sample_all(
                         backend.as_ref(),
+                        docker::client(),
                         &config,
                         &store,
                         &mut prev,
@@ -622,6 +663,7 @@ mod tests {
         let mut prev = Prev::new();
         let n = sample_all(
             &backend,
+            &DockerClient::new("/nonexistent"),
             &cfg,
             &store,
             &mut prev,
@@ -645,5 +687,77 @@ mod tests {
             store.latest("other").is_none(),
             "non-minecraft units are not sampled"
         );
+    }
+
+    #[tokio::test]
+    async fn docker_services_are_sampled_and_one_failing_does_not_affect_others() {
+        use crate::docker::test_support::{fake_socket, tmpdir};
+        let cfg = config(
+            "[[service]]\nid='discord-bot'\nname='B'\nbackend='docker'\ncontainer='bot'\n\
+             [[service]]\nid='gone'\nname='G'\nbackend='docker'\ncontainer='gone'\n\
+             [[service]]\nid='idle'\nname='I'\nbackend='docker'\ncontainer='idle'\n",
+        );
+        let inspect = |s: &str| format!(r#"{{"State":{{"Status":"{s}"}}}}"#).into_bytes();
+        let stats = br#"{"cpu_stats":{"cpu_usage":{"total_usage":50},"system_cpu_usage":1000},
+            "precpu_stats":{"cpu_usage":{"total_usage":0},"system_cpu_usage":0},
+            "memory_stats":{"usage":4096}}"#
+            .to_vec();
+        let dir = tmpdir("m-docker");
+        let sock = fake_socket(
+            &dir,
+            vec![
+                (
+                    "/containers/bot/json",
+                    200,
+                    "application/json",
+                    inspect("running"),
+                ),
+                (
+                    "/containers/bot/stats?stream=false",
+                    200,
+                    "application/json",
+                    stats,
+                ),
+                (
+                    "/containers/idle/json",
+                    200,
+                    "application/json",
+                    inspect("exited"),
+                ),
+            ],
+        )
+        .await;
+        let store = Store::in_memory();
+        let n = sample_all(
+            &FakeBackend::new(&[]),
+            &DockerClient::new(sock),
+            &cfg,
+            &store,
+            &mut Prev::new(),
+            1_000,
+            Path::new("/nonexistent"),
+            1.0,
+        )
+        .await;
+        assert_eq!(n, 2, "bot and idle recorded, gone skipped");
+        assert_eq!(
+            store.latest("discord-bot"),
+            Some(Sample {
+                t: 900,
+                cpu_pct: 5.0,
+                mem_bytes: 4096,
+                up: true
+            })
+        );
+        assert_eq!(
+            store.latest("idle"),
+            Some(Sample {
+                t: 900,
+                cpu_pct: 0.0,
+                mem_bytes: 0,
+                up: false
+            })
+        );
+        assert!(store.latest("gone").is_none());
     }
 }
