@@ -75,6 +75,8 @@ async fn main() {
         game_uid: auth::game_uid(),
     });
 
+    // Start the metrics sampler at boot so history accrues before anyone calls the API.
+    mcsv_manager::metrics::ensure_started(&state);
     tokio::spawn(handle_signals(backend.clone()));
     backend.reload().await.unwrap();
 

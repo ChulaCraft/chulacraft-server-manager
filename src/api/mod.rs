@@ -3,8 +3,7 @@
 
 use std::sync::Arc;
 
-use axum::{Json, Router, http::StatusCode};
-use serde_json::{Value, json};
+use axum::Router;
 
 use crate::state::AppState;
 
@@ -17,11 +16,4 @@ pub fn routes() -> Router<Arc<AppState>> {
         .merge(services::routes())
         .merge(docker::routes())
         .merge(backups::routes())
-}
-
-pub(crate) fn not_implemented() -> (StatusCode, Json<Value>) {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(json!({ "error": "not implemented" })),
-    )
 }
