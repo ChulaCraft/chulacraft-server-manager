@@ -1,0 +1,23 @@
+[Unit]
+Description=Chulacraft backup (%i)
+# %i is world, supabase or bot; the script refuses anything else. The request id
+# comes from /var/lib/mcsv_manager/backup-requests/%i.id and is validated there.
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Root: reads the worlds and writes 0700 archives. The manager never runs this
+# work; it only starts this unit.
+ExecStart=/usr/local/lib/chulacraft-backup/chulacraft-backup.sh %i
+# 120 s of save wait per instance plus the archive; the script also traps TERM
+# and sends save-on.
+TimeoutStartSec=4h
+TimeoutStopSec=60
+KillMode=control-group
+Nice=19
+IOSchedulingClass=idle
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full

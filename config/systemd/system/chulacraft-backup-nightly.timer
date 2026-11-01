@@ -1,0 +1,10 @@
+[Unit]
+Description=Chulacraft nightly backups at 04:00 host time
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+Unit=chulacraft-backup-nightly.service
+
+[Install]
+WantedBy=timers.target

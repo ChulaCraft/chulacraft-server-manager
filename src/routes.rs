@@ -317,13 +317,11 @@ mod tests {
             };
             let right = send(&state, call.token(bit)).await.0;
             // The service API answers 404 for the unknown service `a` (image and update included);
-            // `/services` lists; backups are still a stub here.
-            let want = if path == "/backups" {
-                StatusCode::NOT_IMPLEMENTED
-            } else if path == "/services" {
-                StatusCode::OK
-            } else {
-                StatusCode::NOT_FOUND
+            // `/services` lists; backups are implemented: an empty POST body is a 400.
+            let want = match (method, path) {
+                ("GET", "/backups") | ("GET", "/services") => StatusCode::OK,
+                ("POST", "/backups") => StatusCode::BAD_REQUEST,
+                _ => StatusCode::NOT_FOUND,
             };
             assert_eq!(right, want, "{method} {path}");
         }

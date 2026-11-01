@@ -1,0 +1,10 @@
+[Unit]
+Description=Chulacraft nightly backups (all targets, one after another)
+
+[Service]
+Type=oneshot
+# One at a time so the world archive and the database dump never compete for
+# disk. A failing target does not stop the next ("-").
+ExecStart=-/usr/bin/systemctl start chulacraft-backup@world.service
+ExecStart=-/usr/bin/systemctl start chulacraft-backup@bot.service
+ExecStart=-/usr/bin/systemctl start chulacraft-backup@supabase.service
