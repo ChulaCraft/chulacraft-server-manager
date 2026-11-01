@@ -1,0 +1,27 @@
+# /etc/mcsv_manager/config.toml. Copy, then edit. Unknown keys are errors.
+# Without this file the manager has no configured services.
+
+# One [[service]] per managed thing. `website` and `bot` are reserved ids.
+[[service]]
+id = "survival"
+name = "Survival"
+backend = "systemd"
+unit = "minecraft@survival.service"
+# actions = ["start", "stop", "restart"]   # default: all three
+# console = true                            # default: true for systemd
+
+[[service]]
+id = "discord-bot"
+name = "Discord bot"
+backend = "docker"
+container = "chulacraft-discord"
+# Both or neither; together they make the service updatable.
+compose_file = "/srv/chulacraft/discord/compose.yaml"
+compose_service = "bot"
+
+[backups]
+nightly_at = "04:00"      # host local time; the systemd timer fires it
+keep_daily = 7            # per target, at least 1
+keep_weekly = 4           # per target, at least 1
+world_dir = "/srv/minecraft/instances/survival"
+world_instances = ["survival"]   # minecraft@<name> instances the world target covers

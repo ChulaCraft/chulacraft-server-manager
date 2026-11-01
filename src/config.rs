@@ -242,6 +242,13 @@ world_instances = ["survival"]
     }
 
     #[test]
+    fn the_shipped_example_config_parses() {
+        let c = Config::parse(include_str!("../config/mcsv_manager/config.example.toml")).unwrap();
+        assert_eq!(c.services.len(), 2);
+        assert_eq!(c.backups.unwrap().keep_daily, 7);
+    }
+
+    #[test]
     fn empty_and_missing_configs_have_no_services() {
         assert!(Config::parse("").unwrap().services.is_empty());
         assert!(
