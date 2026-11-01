@@ -27,13 +27,21 @@ async fn run(
     body: Bytes,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     auth.require(auth::BACKUP_RUN)?;
-    let bad = || AppError::Api(StatusCode::BAD_REQUEST.into());
+    let bad = || {
+        AppError::status(
+            StatusCode::BAD_REQUEST,
+            "body must be {\"target\": \"world\"|\"supabase\"|\"bot\"}",
+        )
+    };
     let body: Value = serde_json::from_slice(&body).map_err(|_| bad())?;
     let target = body.get("target").and_then(Value::as_str).ok_or_else(bad)?;
     match backups::request(&Dirs::from_env(), state.backend.as_ref(), target).await {
         Ok(id) => Ok((StatusCode::ACCEPTED, Json(json!({ "id": id })))),
         Err(RunError::UnknownTarget) => Err(bad()),
-        Err(RunError::Running) => Err(AppError::Api(StatusCode::CONFLICT.into())),
+        Err(RunError::Running) => Err(AppError::status(
+            StatusCode::CONFLICT,
+            "a backup of that target is already running",
+        )),
         Err(RunError::App(e)) => Err(e),
     }
 }
