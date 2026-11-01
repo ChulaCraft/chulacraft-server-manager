@@ -9,18 +9,28 @@ Build the project
 cargo build --release
 ```
 
+Run both as root, in either order (`install.sh` creates the `mcsv-mgr` group itself
+if `setup.sh` has not run yet). Run `setup.sh` once per host; it never rewrites
+existing files under `/srv/minecraft`.
+
 Installation
-- install the binary
+- install the binaries, the Docker proxy and the backup script and units
 ```bash
 sudo bash scripts/install.sh
 ```
 
 Basic setup
 - setup user & group for safety
-- install apache config file, systemd service and socket
+- install apache config file, systemd service and socket, the `minecraft@.service` template and the polkit rule
 ```bash
 sudo bash scripts/setup.sh
 ```
+
+Configuration
+- copy [config/mcsv_manager/config.example.toml](config/mcsv_manager/config.example.toml)
+  to `/etc/mcsv_manager/config.toml` and edit it (services and `[backups]`).
+  Retention and credentials for the backup script live in
+  `/etc/chulacraft/backup/backup.env` (`KEEP_DAILY`, `KEEP_WEEKLY`), not here.
 
 Auth: the socket is mode 0660, group `mcsv-http`, so only members can connect
 (`setup.sh` creates the group and adds `www-data`, which Apache runs as, and

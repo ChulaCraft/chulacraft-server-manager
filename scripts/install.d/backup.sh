@@ -3,6 +3,10 @@
 BACKUP_SRC="$SCRIPT_DIR/backup"
 UNIT_SRC="$SCRIPT_DIR/../config/systemd/system"
 
+# The manifest dir below is group mcsv-mgr. setup.sh normally creates the group,
+# but install.sh must not depend on running after it; creating it twice is harmless.
+getent group mcsv-mgr > /dev/null || groupadd --system mcsv-mgr
+
 install -d -m 0755 /usr/local/lib/chulacraft-backup
 install -m 0755 "$BACKUP_SRC/chulacraft-backup.sh" /usr/local/lib/chulacraft-backup/chulacraft-backup.sh
 
