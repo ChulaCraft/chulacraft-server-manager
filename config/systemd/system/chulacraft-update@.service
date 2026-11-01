@@ -1,0 +1,11 @@
+[Unit]
+Description=Pull and recreate the docker service %i
+
+[Service]
+Type=oneshot
+# Root-owned, 0600, written by `mcsv-docker-proxy update-env` at deploy time.
+# Only services with an env file can be updated; nothing from a request reaches
+# the command line except the instance name %i.
+EnvironmentFile=/etc/chulacraft/update/%i.env
+ExecStart=/bin/sh -c 'docker compose -f "$COMPOSE_FILE" pull "$COMPOSE_SERVICE" && docker compose -f "$COMPOSE_FILE" up -d "$COMPOSE_SERVICE"'
+TimeoutStartSec=15min

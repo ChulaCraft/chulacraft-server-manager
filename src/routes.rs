@@ -316,16 +316,15 @@ mod tests {
                 post(path)
             };
             let right = send(&state, call.token(bit)).await.0;
-            // The service API (T2.6) answers 404 for the unknown service `a`;
-            // image, update and backups are still stubs.
-            let want =
-                if path.ends_with("/image") || path.ends_with("/update") || path == "/backups" {
-                    StatusCode::NOT_IMPLEMENTED
-                } else if path == "/services" {
-                    StatusCode::OK
-                } else {
-                    StatusCode::NOT_FOUND
-                };
+            // The service API answers 404 for the unknown service `a` (image and update included);
+            // `/services` lists; backups are still a stub here.
+            let want = if path == "/backups" {
+                StatusCode::NOT_IMPLEMENTED
+            } else if path == "/services" {
+                StatusCode::OK
+            } else {
+                StatusCode::NOT_FOUND
+            };
             assert_eq!(right, want, "{method} {path}");
         }
         let (status, _, body) = send(&state, post("/service/a/explode").token(0x3ff)).await;
