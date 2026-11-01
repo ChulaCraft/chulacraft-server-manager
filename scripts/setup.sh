@@ -15,9 +15,15 @@ usermod -aG mcsv-http mcsv-mgr
 # Apache needs it to reach the socket; restart apache2 so it picks the group up.
 if id www-data > /dev/null 2>&1; then usermod -aG mcsv-http www-data; fi
 
-mkdir -p /srv/minecraft/instances /srv/minecraft/shared
-chown -R mcsv-mgr:mcsv-mgr /srv/minecraft
-chmod -R 2775 /srv/minecraft
+# Only directories created here are chowned. Never recurse: an existing host has
+# worlds under instances/ whose owner and modes are not ours to rewrite.
+for dir in /srv/minecraft /srv/minecraft/instances /srv/minecraft/shared; do
+    if [ ! -e "$dir" ]; then
+        mkdir "$dir"
+        chown mcsv-mgr:mcsv-mgr "$dir"
+        chmod 2775 "$dir"
+    fi
+done
 
 mkdir -p /etc/apache2/sites-available
 if [ ! -f /etc/apache2/sites-available/mcsv_manager.conf ]; then
