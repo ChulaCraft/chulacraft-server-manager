@@ -38,6 +38,15 @@ fi
 cp "$CONFIG_DIR/systemd/system/mcsv_manager.socket" /usr/lib/systemd/system/
 cp "$CONFIG_DIR/systemd/system/mcsv_manager.service" /usr/lib/systemd/system/
 cp "$CONFIG_DIR/systemd/system/minecraft@.socket" /usr/lib/systemd/system/
+# minecraft@.service may already exist (often customised) on a host with servers:
+# never overwrite it, install ours as .dist for the admin to compare.
+if [ -e /usr/lib/systemd/system/minecraft@.service ] || [ -e /etc/systemd/system/minecraft@.service ]; then
+    cp "$CONFIG_DIR/systemd/system/minecraft@.service" /usr/lib/systemd/system/minecraft@.service.dist
+    echo "setup.sh: minecraft@.service already exists, left untouched." >&2
+    echo "setup.sh: compare it with /usr/lib/systemd/system/minecraft@.service.dist" >&2
+else
+    cp "$CONFIG_DIR/systemd/system/minecraft@.service" /usr/lib/systemd/system/
+fi
 cp "$CONFIG_DIR/tmpfiles.d/minecraft.conf" /usr/lib/tmpfiles.d/
 
 systemd-tmpfiles --create

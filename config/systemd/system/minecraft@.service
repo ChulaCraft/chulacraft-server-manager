@@ -12,8 +12,16 @@ UMask=0002
 
 WorkingDirectory=/srv/minecraft/instances/%i
 
-ExecStart=/lib/jvm/java-21-openjdk-amd64/bin/java \
-  -Xms2G -Xmx6G \
+# Heap: override in /etc/mcsv_manager/minecraft.env (all instances) or
+# /etc/mcsv_manager/minecraft-<id>.env (one instance), e.g. MC_XMX=8G.
+# Java: systemd cannot take the executable from a variable, so to use another JVM
+# run `systemctl edit minecraft@.service` and set `ExecStart=` then a full new line.
+Environment=MC_XMS=2G MC_XMX=6G
+EnvironmentFile=-/etc/mcsv_manager/minecraft.env
+EnvironmentFile=-/etc/mcsv_manager/minecraft-%i.env
+
+ExecStart=/usr/bin/java \
+  -Xms${MC_XMS} -Xmx${MC_XMX} \
   -Djava.library.path=libraries \
   -Dsun.java.command="minecraft@%i" \
   -jar server.jar \

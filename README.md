@@ -86,7 +86,7 @@ socket-activated fd. It is for tests only: never install a binary built with it.
 - `tests/apache/run.sh`: real Apache proxying to a unix socket, checking 200,
   401, 403 and the console WebSocket subprotocol.
 
-Minecraft server service template is at [config/systemd/system/minecraft@template.service](config/systemd/system/minecraft@template.service)
+The Minecraft unit template is [config/systemd/system/minecraft@.service](config/systemd/system/minecraft@.service) (instance `<id>` runs as `minecraft@<id>.service`, stdin FIFO `/run/minecraft/<id>.stdin` created by `minecraft@.socket`). `setup.sh` never overwrites an existing `minecraft@.service`; it writes `minecraft@.service.dist` beside it. Heap and Java are overridable, see the comments in the unit.
 
 \* Further Setup is your own responsibility including instances, Minecraft servers and API.
 
