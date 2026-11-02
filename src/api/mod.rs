@@ -1,5 +1,4 @@
 //! The `/service*` and `/backups` API from docs/ops-manager-contract.md.
-//! Each submodule is a stub that answers 501 until its task fills it in.
 
 use std::sync::Arc;
 

@@ -4,6 +4,12 @@ polkit.addRule(function(action, subject) {
     if (action.id == "org.freedesktop.systemd1.manage-units" &&
         subject.user == "mcsv-mgr") {
         var unit = action.lookup("unit");
+        // Only start/stop/restart. Where polkit does not pass the verb, the unit check
+        // alone applies, as before.
+        var verb = action.lookup("verb");
+        if (verb && verb != "start" && verb != "stop" && verb != "restart") {
+            return polkit.Result.NOT_HANDLED;
+        }
         if (unit &&
             (/^minecraft@[A-Za-z0-9_-]+\.service$/.test(unit) ||
              /^chulacraft-update@[A-Za-z0-9_-]+\.service$/.test(unit) ||

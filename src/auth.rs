@@ -40,6 +40,26 @@ pub struct Claims {
     pub permission: PermissionBits,
 }
 
+/// Public half of the throwaway key pair the test suite signs with. Its private half is
+/// in this repository, so a host trusting it would accept forged tokens.
+const TEST_PUBLIC_KEY: &str = "MCowBQYDK2VwAyEA2xUoKv6AN4BdDOL3w4jdT5//wM21JOJqtKniJe6nQ7c=";
+
+/// `MCSV_JWT_PUBLIC_KEY` must never be the test key, in either accepted format.
+fn refuse_test_key(raw: &str) -> Result<(), io::Error> {
+    let body: String = raw
+        .lines()
+        .filter(|l| !l.starts_with("-----"))
+        .flat_map(|l| l.split_whitespace())
+        .collect();
+    if body == TEST_PUBLIC_KEY {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "MCSV_JWT_PUBLIC_KEY is the public test key; configure the real key",
+        ));
+    }
+    Ok(())
+}
+
 /// Verifies tokens minted by chulacraft-web. Only the public key lives here, so
 /// this host can check tokens but never mint one.
 pub struct Jwt {
@@ -62,7 +82,10 @@ impl Jwt {
         match std::env::var("MCSV_JWT_PUBLIC_KEY") {
             // The shipped env file has `MCSV_JWT_PUBLIC_KEY=` with no value.
             Ok(raw) if raw.trim().is_empty() => Ok(None),
-            Ok(raw) => Self::from_key_text(&raw).map(Some),
+            Ok(raw) => {
+                refuse_test_key(&raw)?;
+                Self::from_key_text(&raw).map(Some)
+            }
             Err(std::env::VarError::NotPresent) => Ok(None),
             Err(std::env::VarError::NotUnicode(_)) => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -341,7 +364,7 @@ pub(crate) mod testkit {
 
     // Throwaway pair generated for these tests only.
     const PRIVATE: &str = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIEdC1r034m2hJxfU5JhJTxXWgYxO4UNNB5m2wEVx1Lrw\n-----END PRIVATE KEY-----\n";
-    const PUBLIC: &str = "MCowBQYDK2VwAyEA2xUoKv6AN4BdDOL3w4jdT5//wM21JOJqtKniJe6nQ7c=";
+    const PUBLIC: &str = TEST_PUBLIC_KEY;
 
     pub fn now() -> u64 {
         std::time::SystemTime::now()
@@ -387,9 +410,20 @@ mod tests {
         ] {
             assert!(Jwt::from_key_text(bad).is_err(), "{bad:?}");
         }
-        let good = "MCowBQYDK2VwAyEA2xUoKv6AN4BdDOL3w4jdT5//wM21JOJqtKniJe6nQ7c=";
+        let good = TEST_PUBLIC_KEY;
         let jwt = Jwt::from_key_text(good).unwrap();
         assert!(jwt.verify(&sign(claims(now() + 60, 1))).is_some());
+    }
+
+    #[test]
+    fn the_builtin_test_key_is_refused_at_startup() {
+        let pem =
+            format!("-----BEGIN PUBLIC KEY-----\n{TEST_PUBLIC_KEY}\n-----END PUBLIC KEY-----\n");
+        for raw in [TEST_PUBLIC_KEY, &format!(" {TEST_PUBLIC_KEY}\n"), &pem] {
+            assert!(refuse_test_key(raw).is_err(), "{raw:?}");
+        }
+        assert!(refuse_test_key("MCowBQYDK2VwAyEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").is_ok());
+        assert!(refuse_test_key("").is_ok());
     }
 
     #[test]
