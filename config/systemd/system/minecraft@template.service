@@ -2,7 +2,8 @@
 Description=Minecraft Server %i
 After=network.target
 Wants=network.target
-Requires=minecraft@%i.socket
+BindsTo=minecraft@%i.socket
+After=minecraft@%i.socket
 
 [Service]
 Type=simple
@@ -26,7 +27,11 @@ StandardInput=socket
 StandardOutput=journal
 StandardError=journal
 
-Restart=no
+Restart=on-failure
+RestartSec=5s
+
+StartLimitIntervalSec=300s
+StartLimitBurst=2
 
 # CLEAN SHUTDOWN
 ExecStop=/bin/sh -c 'printf "stop\n" > /run/minecraft/%i.stdin'

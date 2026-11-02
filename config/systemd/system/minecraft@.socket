@@ -1,6 +1,9 @@
 [Unit]
 Description=Minecraft stdin socket for %i
 PartOf=minecraft@%i.service
+StopPropagatedFrom=minecraft@%i.service
+JoinsNamespaceOf=minecraft@%i.service
+PropagatesReloadTo=minecraft@%i.service
 
 [Socket]
 ListenFIFO=/run/minecraft/%i.stdin
