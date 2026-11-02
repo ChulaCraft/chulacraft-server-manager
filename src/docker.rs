@@ -569,6 +569,38 @@ pub mod proxy {
 
     use super::*;
 
+    /// The account the manager runs as; the only non-root peer the proxy answers.
+    pub const MANAGER_USER: &str = "mcsv-mgr";
+
+    /// Peers (by kernel-reported uid, SO_PEERCRED) the proxy answers: root and `allowed`.
+    /// An unknown peer is refused.
+    pub fn peer_allowed(uid: Option<u32>, allowed: &[u32]) -> bool {
+        uid.is_some_and(|u| u == 0 || allowed.contains(&u))
+    }
+
+    /// `MCSV_DOCKER_PROXY_UIDS` (numeric uids, comma or space separated) if set, else the
+    /// uid of `MANAGER_USER`. A bad entry or a missing user is an error: the proxy then
+    /// does not start, rather than start open.
+    pub fn allowed_peer_uids(raw: Option<&str>) -> Result<Vec<u32>, String> {
+        if let Some(raw) = raw {
+            return raw
+                .split([',', ' ', '\n'])
+                .filter(|p| !p.is_empty())
+                .map(|p| {
+                    p.parse::<u32>()
+                        .map_err(|_| format!("MCSV_DOCKER_PROXY_UIDS: {p:?} is not a numeric uid"))
+                })
+                .collect();
+        }
+        let name = std::ffi::CString::new(MANAGER_USER).map_err(|e| e.to_string())?;
+        // Called once at startup, before any threads need getpwnam.
+        let user = unsafe { libc::getpwnam(name.as_ptr()) };
+        if user.is_null() {
+            return Err(format!("user {MANAGER_USER} not found"));
+        }
+        Ok(vec![unsafe { (*user).pw_uid }])
+    }
+
     /// A request that passed the syntax check. Authorization (is the container
     /// configured?) is a second step, `serve`.
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1022,6 +1054,18 @@ mod tests {
     use super::proxy::*;
     use super::test_support::{fake_socket, tmpdir};
     use super::*;
+
+    #[test]
+    fn only_root_and_the_listed_uids_may_use_the_proxy() {
+        let allowed = [995];
+        assert!(peer_allowed(Some(0), &allowed));
+        assert!(peer_allowed(Some(995), &allowed));
+        assert!(!peer_allowed(Some(996), &allowed), "e.g. the game user");
+        assert!(!peer_allowed(None, &allowed), "unknown peer");
+        assert!(!peer_allowed(Some(996), &[]));
+        assert_eq!(allowed_peer_uids(Some("12, 34")).unwrap(), vec![12, 34]);
+        assert!(allowed_peer_uids(Some("mcsv")).is_err());
+    }
 
     // ---- allow / deny table -------------------------------------------------
 

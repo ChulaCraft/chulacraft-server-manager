@@ -23,6 +23,7 @@ if [ "$REMOVE_EVERYTHING" = true ]; then
     deluser --system mcsv || true
     delgroup --system mcsv-mgr || true
     delgroup --system mcsv-http || true
+    delgroup --system mcsv-docker || true
 
     rm -f /etc/polkit-1/rules.d/mcsv-manager.rules
 fi

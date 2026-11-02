@@ -4,10 +4,11 @@ After=docker.service
 Wants=docker.service
 
 [Service]
-# The manager group may use the socket; the proxy is the only thing that
-# touches /var/run/docker.sock on the manager's behalf.
+# The socket belongs to mcsv-docker, a group holding only mcsv-mgr (not the game user,
+# whose primary group is mcsv-mgr); the proxy also checks the peer uid. The proxy is the
+# only thing that touches /var/run/docker.sock on the manager's behalf.
 DynamicUser=yes
-Group=mcsv-mgr
+Group=mcsv-docker
 SupplementaryGroups=docker
 RuntimeDirectory=mcsv-docker-proxy
 RuntimeDirectoryMode=0750

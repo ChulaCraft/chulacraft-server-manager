@@ -8,6 +8,10 @@ DOCKER_UNITS_SRC="$SCRIPT_DIR/../config/systemd/system"
 
 install-target mcsv-docker-proxy
 
+# Group of the proxy socket: holds only the manager account (setup.sh does the same).
+getent group mcsv-docker > /dev/null || groupadd --system mcsv-docker
+usermod -aG mcsv-docker mcsv-mgr
+
 install -m 644 "$DOCKER_UNITS_SRC/mcsv-docker-proxy.service" "$UNIT_DIR/mcsv-docker-proxy.service"
 install -m 644 "$DOCKER_UNITS_SRC/chulacraft-update@.service" "$UNIT_DIR/chulacraft-update@.service"
 

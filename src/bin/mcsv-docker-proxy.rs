@@ -6,6 +6,9 @@
 //!   mcsv-docker-proxy                       serve (env below)
 //!   mcsv-docker-proxy update-env <dir>      write <dir>/<id>.env for updatable services
 //!
+//! Only root and the manager's uid (`MCSV_DOCKER_PROXY_UIDS`, default the `mcsv-mgr` user)
+//! are answered, checked with SO_PEERCRED; anyone else who can reach the socket gets 403.
+//!
 //! Env: `MCSV_CONFIG` (manager config), `MCSV_DOCKER_PROXY_LISTEN` (default
 //! `/run/mcsv-docker-proxy/docker.sock`), `MCSV_DOCKER_UPSTREAM` (default
 //! `/var/run/docker.sock`).
@@ -18,7 +21,7 @@ use mcsv_manager::{
     config::Config,
     docker::{
         DEFAULT_PROXY_SOCKET, DEFAULT_UPSTREAM_SOCKET,
-        proxy::{Reply, SocketUpstream, containers, serve},
+        proxy::{Reply, SocketUpstream, allowed_peer_uids, containers, peer_allowed, serve},
         write_update_envs,
     },
 };
@@ -46,7 +49,23 @@ fn reason(status: u16) -> &'static str {
     }
 }
 
-async fn handle(mut s: UnixStream, allowed: Arc<Vec<String>>, up: Arc<SocketUpstream>) {
+async fn handle(
+    mut s: UnixStream,
+    allowed: Arc<Vec<String>>,
+    peers: Arc<Vec<u32>>,
+    up: Arc<SocketUpstream>,
+) {
+    if !peer_allowed(s.peer_cred().ok().map(|c| c.uid()), &peers) {
+        let body = b"forbidden by mcsv-docker-proxy";
+        let out = format!(
+            "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            String::from_utf8_lossy(body)
+        );
+        let _ = s.write_all(out.as_bytes()).await;
+        let _ = s.shutdown().await;
+        return;
+    }
     let mut head = Vec::new();
     let mut buf = [0u8; 2048];
     while !head.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -93,9 +112,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("MCSV_DOCKER_PROXY_LISTEN").unwrap_or_else(|_| DEFAULT_PROXY_SOCKET.into());
     let upstream =
         std::env::var("MCSV_DOCKER_UPSTREAM").unwrap_or_else(|_| DEFAULT_UPSTREAM_SOCKET.into());
+    let peers = Arc::new(allowed_peer_uids(
+        std::env::var("MCSV_DOCKER_PROXY_UIDS").ok().as_deref(),
+    )?);
     let _ = std::fs::remove_file(&listen);
     let listener = UnixListener::bind(&listen)?;
-    // The manager's group reads and writes it; nobody else.
+    // The proxy group (mcsv-docker, only the manager) reads and writes it; nobody else.
     std::fs::set_permissions(&listen, std::fs::Permissions::from_mode(0o660))?;
     let up = Arc::new(SocketUpstream(PathBuf::from(upstream)));
     let slots = Arc::new(Semaphore::new(64));
@@ -103,9 +125,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         let (stream, _) = listener.accept().await?;
         let permit = slots.clone().acquire_owned().await?;
-        let (allowed, up) = (allowed.clone(), up.clone());
+        let (allowed, peers, up) = (allowed.clone(), peers.clone(), up.clone());
         tokio::spawn(async move {
-            let _ = tokio::time::timeout(CONN_TIMEOUT, handle(stream, allowed, up)).await;
+            let _ = tokio::time::timeout(CONN_TIMEOUT, handle(stream, allowed, peers, up)).await;
             drop(permit);
         });
     }

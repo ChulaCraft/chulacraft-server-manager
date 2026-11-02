@@ -11,6 +11,9 @@ addgroup --system mcsv-http
 adduser --system --ingroup mcsv-mgr --no-create-home mcsv-mgr
 adduser --system --ingroup mcsv-mgr --no-create-home mcsv
 usermod -aG adm mcsv-mgr
+# Who may open the Docker proxy socket: the manager only, never the game user.
+addgroup --system mcsv-docker
+usermod -aG mcsv-docker mcsv-mgr
 usermod -aG mcsv-http mcsv-mgr
 # Apache needs it to reach the socket; restart apache2 so it picks the group up.
 if id www-data > /dev/null 2>&1; then usermod -aG mcsv-http www-data; fi
