@@ -445,10 +445,17 @@ world_instances = ['survival']
 ";
 
     fn svc_state() -> (Arc<AppState>, Arc<FakeBackend>) {
+        svc_state_with("t26-")
+    }
+
+    /// Like `svc_state`, with service ids prefixed `prefix` instead of `t26-`. The metrics
+    /// store is process-wide, so tests that read or write live state (`last_restart`) must
+    /// each use ids no other test uses.
+    fn svc_state_with(prefix: &str) -> (Arc<AppState>, Arc<FakeBackend>) {
         let backend = Arc::new(FakeBackend::new(&["survival", "creative"]));
         let state = Arc::new(AppState {
             backend: backend.clone(),
-            config: Config::parse(SERVICES).unwrap(),
+            config: Config::parse(&SERVICES.replace("t26-", prefix)).unwrap(),
             jwt: Some(testkit::jwt()),
             trusted_uids: vec![],
             game_uid: None,
@@ -480,8 +487,8 @@ world_instances = ['survival']
 
     #[tokio::test]
     async fn status_reports_state_and_isolates_a_failing_service() {
-        let (state, backend) = svc_state();
-        let path = "/service/t26-survival/status";
+        let (state, backend) = svc_state_with("t26st-");
+        let path = "/service/t26st-survival/status";
         let (status, _, body) = send(&state, get(path).token(auth::STATUS)).await;
         assert_eq!(status, StatusCode::OK);
         let v = json(&body);
@@ -507,7 +514,7 @@ world_instances = ['survival']
         backend.fail_status("creative");
         let (status, _, body) = send(
             &state,
-            get("/service/t26-limited/status").token(auth::STATUS),
+            get("/service/t26st-limited/status").token(auth::STATUS),
         )
         .await;
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
@@ -516,7 +523,7 @@ world_instances = ['survival']
         assert_eq!(status, StatusCode::OK, "another service is unaffected");
 
         let (status, _, body) =
-            send(&state, get("/service/t26-bot/status").token(auth::STATUS)).await;
+            send(&state, get("/service/t26st-bot/status").token(auth::STATUS)).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert!(json(&body)["error"].is_string());
         let (status, _, body) = send(&state, get("/service/nope/status").token(auth::STATUS)).await;
@@ -617,10 +624,10 @@ world_instances = ['survival']
 
     #[tokio::test]
     async fn actions_answer_202_404_and_409() {
-        let (state, backend) = svc_state();
+        let (state, backend) = svc_state_with("t26ac-");
         for action in ["start", "stop", "restart"] {
             let path: &'static str =
-                Box::leak(format!("/service/t26-survival/{action}").into_boxed_str());
+                Box::leak(format!("/service/t26ac-survival/{action}").into_boxed_str());
             let bit = match action {
                 "start" => auth::START,
                 "stop" => auth::STOP,
@@ -639,7 +646,7 @@ world_instances = ['survival']
         );
         let (_, _, body) = send(
             &state,
-            get("/service/t26-survival/status").token(auth::STATUS),
+            get("/service/t26ac-survival/status").token(auth::STATUS),
         )
         .await;
         assert!(
@@ -650,13 +657,13 @@ world_instances = ['survival']
         // Not in the service's `actions`, unknown service, docker (T2.7), unknown action.
         for (path, bit, want) in [
             (
-                "/service/t26-limited/start",
+                "/service/t26ac-limited/start",
                 auth::START,
                 StatusCode::NOT_FOUND,
             ),
             ("/service/nope/start", auth::START, StatusCode::NOT_FOUND),
             (
-                "/service/t26-bot/start",
+                "/service/t26ac-bot/start",
                 auth::START,
                 StatusCode::SERVICE_UNAVAILABLE,
             ),
@@ -667,7 +674,7 @@ world_instances = ['survival']
         }
         let (status, _, _) = send(
             &state,
-            post("/service/t26-limited/restart").token(auth::RESTART),
+            post("/service/t26ac-limited/restart").token(auth::RESTART),
         )
         .await;
         assert_eq!(status, StatusCode::ACCEPTED);
@@ -676,8 +683,11 @@ world_instances = ['survival']
         let before = backend.calls.lock().unwrap().len();
         for s in ["activating", "deactivating"] {
             backend.set_state("survival", s);
-            let (status, _, body) =
-                send(&state, post("/service/t26-survival/stop").token(auth::STOP)).await;
+            let (status, _, body) = send(
+                &state,
+                post("/service/t26ac-survival/stop").token(auth::STOP),
+            )
+            .await;
             assert_eq!(status, StatusCode::CONFLICT, "{s}");
             assert!(json(&body)["error"].is_string());
         }
