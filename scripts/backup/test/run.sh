@@ -44,7 +44,7 @@ EOF
     export BACKUP_ENV="$T/backup.env" BACKUP_NICED=1
     export DF_TOTAL=$((1000 * 1073741824)) DF_AVAIL=$((500 * 1073741824))
     echo '{"users": []}' > "$T/db.json"
-    unset TAR_KILL STUB_SAVED
+    unset TAR_KILL STUB_SAVED STUB_CHAT_ONLY
     READERS=()
 }
 
@@ -82,12 +82,20 @@ EOF
     cat > "$b/journalctl" << 'EOF'
 #!/bin/bash
 unit=""; while [ $# -gt 0 ]; do [ "$1" = -u ] && unit="$2"; shift; done
+[ -n "${STUB_CHAT_ONLY:-}" ] && [ -e "$STUB/active-$unit" ] && echo "[12:00:00] [Server thread/INFO]: <mallory> Saved the game"
 [ -n "${STUB_SAVED:-}" ] && [ -e "$STUB/active-$unit" ] && echo "[12:00:00] [Server thread/INFO]: Saved the game"
 exit 0
 EOF
     cat > "$b/curl" << 'EOF'
 #!/bin/bash
+echo "$*" >> "$STUB/curl-args.log"
+[[ " $* " == *" --config - "* ]] && cat >> "$STUB/curl-config.log"
 while [ $# -gt 0 ]; do [ "$1" = -d ] && echo "$2" >> "$STUB/webhook.log"; shift; done
+EOF
+    cat > "$b/runuser" << 'EOF'
+#!/bin/bash
+# runuser -u USER -- cmd...: record the user, then run cmd as ourselves.
+echo "runuser $2" >> "$STUB/calls.log"; shift 3; exec "$@"
 EOF
     cat > "$b/docker" << 'EOF'
 #!/bin/bash
@@ -258,6 +266,29 @@ check "save-on sent after the timeout" eq "$(fifolog a | tr '\n' '|')" "save-off
 check "waited 120 fake seconds" test "$(($(cat "$STUB/clock") - t0))" -ge 120
 check "fake clock did not run much past the timeout" test "$(($(cat "$STUB/clock") - t0))" -le 125
 check "webhook mentions the timeout" grep -q 'timed out' "$STUB/webhook.log"
+teardown
+
+echo "== a chat line is not the server's save confirmation"
+setup
+world a; fifo a; running a
+t0="$(cat "$STUB/clock")"
+STUB_CHAT_ONLY=1 backup world; rc=$?
+check "chat 'Saved the game' does not satisfy the wait: fails" test "$rc" -ne 0
+settle
+check "still waited out the timeout" test "$(($(cat "$STUB/clock") - t0))" -ge 120
+check "save-on still sent" eq "$(fifolog a | tr '\n' '|')" "save-off|save-all flush|save-on|"
+teardown
+
+echo "== webhook URL stays off the command line; FIFO writes drop root"
+setup
+world a; fifo a; running a
+STUB_SAVED=1 backup world > /dev/null 2>&1
+echo 'not json' > "$T/db.json"
+backup bot > /dev/null 2>&1
+check "curl was called" test -s "$STUB/curl-args.log"
+check "webhook URL not in any curl argv" bash -c '! grep -q hook.invalid "$1"' _ "$STUB/curl-args.log"
+check "webhook URL given on stdin" grep -q 'url = "http://hook.invalid/x"' "$STUB/curl-config.log"
+check "FIFO writes go through runuser as mcsv" eq "$(grep -c '^runuser mcsv$' "$STUB/calls.log")" 3
 teardown
 
 echo "== running vs stopped server"

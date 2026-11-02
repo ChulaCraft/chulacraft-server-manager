@@ -33,6 +33,7 @@ MANIFEST_DIR="${MANIFEST_DIR:-/var/lib/chulacraft-backup/manifest}"
 REQUEST_DIR="${REQUEST_DIR:-/var/lib/mcsv_manager/backup-requests}"
 WORLD_BASE="${WORLD_BASE:-/srv/minecraft/instances}"
 FIFO_DIR="${FIFO_DIR:-/run/minecraft}"
+GAME_USER="${GAME_USER:-mcsv}" # owns the FIFOs; commands are written as this user
 MIN_FREE_GIB="${MIN_FREE_GIB:-20}"
 MIN_FREE_PCT="${MIN_FREE_PCT:-15}"
 SAVE_TIMEOUT="${SAVE_TIMEOUT:-120}"
@@ -64,8 +65,13 @@ webhook() {
     local msg="$1"
     local body
     body="$(jq -nc --arg c "$msg" '{content: $c}')"
-    curl -fsS --max-time 15 -H 'Content-Type: application/json' -d "$body" \
-        "$ALERT_WEBHOOK_URL" > /dev/null || echo "webhook failed" >&2
+    # The URL carries the webhook secret: it goes to curl on stdin, never in argv
+    # (visible in /proc and ps).
+    local url="${ALERT_WEBHOOK_URL//\\/\\\\}"
+    url="${url//\"/\\\"}"
+    printf 'url = "%s"\n' "$url" |
+        curl -fsS --max-time 15 -H 'Content-Type: application/json' -d "$body" \
+            --config - > /dev/null || echo "webhook failed" >&2
 }
 
 # --- manifest -------------------------------------------------------------------
@@ -91,7 +97,12 @@ server_running() { # instance: the unit is active AND the FIFO exists.
 }
 
 send_cmd() { # instance command
-    timeout 10 bash -c 'printf "%s\n" "$1" > "$2"' _ "$2" "$FIFO_DIR/$1.stdin"
+    # The FIFO's directory is writable by the game account, so root must not open it:
+    # a swapped-in symlink would be followed with root's rights. Write as the FIFO's
+    # owner instead, and re-check it is still a FIFO. Fails closed.
+    local fifo="$FIFO_DIR/$1.stdin"
+    [ -p "$fifo" ] || return 1
+    timeout 10 runuser -u "$GAME_USER" -- sh -c 'printf "%s\n" "$1" > "$2"' _ "$2" "$fifo"
 }
 
 save_on() { # instance
@@ -242,7 +253,9 @@ wait_saved() { # instance start_epoch
     local deadline=$(($2 + SAVE_TIMEOUT)) out
     while :; do
         out="$(journalctl -u "minecraft@$1.service" --since "@$2" --no-pager -o cat 2> /dev/null || true)"
-        [[ "$out" == *"Saved the game"* ]] && return 0
+        # Only the server's own log line: "<name> Saved the game" is chat and must not
+        # satisfy the wait. Vanilla/Forge and Paper prefixes.
+        grep -qE '^\[[0-9:]+( INFO\]|\] \[Server thread/INFO\]): Saved the game\r?$' <<< "$out" && return 0
         [ "$(now_epoch)" -ge "$deadline" ] && return 1
         sleep 1
     done
