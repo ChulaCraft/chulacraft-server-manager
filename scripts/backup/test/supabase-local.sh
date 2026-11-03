@@ -45,6 +45,7 @@ PG_DOCKER_ARGS="--network $NET"
 MIN_FREE_GIB=1
 MIN_FREE_PCT=1
 EOF
+export PG_SSL_INSECURE_LOCAL=1 # test-only: the local stack has no TLS
 export BACKUP_ENV="$T/backup.env" BACKUP_NICED=1
 # The webhook is unreachable by design; a failure here shows in the exit code.
 "$HERE/../chulacraft-backup.sh" supabase || { echo "backup failed"; exit 1; }

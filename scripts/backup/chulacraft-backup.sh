@@ -97,12 +97,15 @@ server_running() { # instance: the unit is active AND the FIFO exists.
 }
 
 send_cmd() { # instance command
-    # The FIFO's directory is writable by the game account, so root must not open it:
-    # a swapped-in symlink would be followed with root's rights. Write as the FIFO's
-    # owner instead, and re-check it is still a FIFO. Fails closed.
+    # /run/minecraft is 0755 mcsv-mgr, so the account that can swap entries in it is
+    # mcsv-mgr, not the game user. Root must not open the FIFO itself: a swapped-in
+    # symlink would be followed with root's rights. Write as the game user instead, and
+    # have dd refuse symlinks (nofollow) so a swapped entry fails rather than being
+    # followed. Fails closed.
     local fifo="$FIFO_DIR/$1.stdin"
     [ -p "$fifo" ] || return 1
-    timeout 10 runuser -u "$GAME_USER" -- sh -c 'printf "%s\n" "$1" > "$2"' _ "$2" "$fifo"
+    printf '%s\n' "$2" | timeout 10 runuser -u "$GAME_USER" -- \
+        dd of="$fifo" oflag=nofollow,append conv=notrunc status=none
 }
 
 save_on() { # instance
@@ -254,8 +257,9 @@ wait_saved() { # instance start_epoch
     while :; do
         out="$(journalctl -u "minecraft@$1.service" --since "@$2" --no-pager -o cat 2> /dev/null || true)"
         # Only the server's own log line: "<name> Saved the game" is chat and must not
-        # satisfy the wait. Vanilla/Forge and Paper prefixes.
-        grep -qE '^\[[0-9:]+( INFO\]|\] \[Server thread/INFO\]): Saved the game\r?$' <<< "$out" && return 0
+        # satisfy the wait. Vanilla/Forge and Paper prefixes, and the Forge/NeoForge form with
+        # an extra bracket group ("[minecraft/MinecraftServer]").
+        grep -qE '^\[[0-9:]+( INFO\]|\] \[Server thread/INFO\]( \[[^]]+\])?): Saved the game\r?$' <<< "$out" && return 0
         [ "$(now_epoch)" -ge "$deadline" ] && return 1
         sleep 1
     done
@@ -293,11 +297,20 @@ case "$TARGET" in
         ;;
     supabase)
         [ -n "${PG_IMAGE:-}" ] || fail "PG_IMAGE is not set (digest-pinned postgres:17-alpine)"
+        # Enforce TLS here: libpq's service file beats environment variables, so the
+        # connection string itself carries sslmode and the CA. PG_SSL_INSECURE_LOCAL=1
+        # is for the local test stack only (no TLS there); never set it in backup.env.
+        if [ "${PG_SSL_INSECURE_LOCAL:-}" = 1 ]; then
+            PG_CONN="service=${PG_SERVICE:-chulacraft}"
+        else
+            [ -s "$PG_CONF_DIR/supabase-ca.crt" ] || fail "$PG_CONF_DIR/supabase-ca.crt is missing or empty"
+            PG_CONN="service=${PG_SERVICE:-chulacraft} sslmode=verify-full sslrootcert=/pg/supabase-ca.crt"
+        fi
         # shellcheck disable=SC2086
         ( ulimit -f "$(limit_blocks)"
           docker run --rm --user 0 $PG_DOCKER_ARGS \
               -v "$PG_CONF_DIR:/pg:ro" -e PGPASSFILE=/pg/pgpass -e PGSERVICEFILE=/pg/pg_service.conf \
-              "$PG_IMAGE" pg_dump "service=${PG_SERVICE:-chulacraft}" -Fc -n public -n auth -n storage \
+              "$PG_IMAGE" pg_dump "$PG_CONN" -Fc -n public -n auth -n storage \
               > "$RUN_DIR/supabase.dump.partial" ) \
             || fail "pg_dump failed or exceeded the disk budget"
         [ -s "$RUN_DIR/supabase.dump.partial" ] || fail "pg_dump wrote nothing"

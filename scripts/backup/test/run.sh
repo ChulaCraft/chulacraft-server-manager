@@ -44,7 +44,10 @@ EOF
     export BACKUP_ENV="$T/backup.env" BACKUP_NICED=1
     export DF_TOTAL=$((1000 * 1073741824)) DF_AVAIL=$((500 * 1073741824))
     echo '{"users": []}' > "$T/db.json"
-    unset TAR_KILL STUB_SAVED STUB_CHAT_ONLY
+    mkdir -p "$T/pg"
+    echo "ca" > "$T/pg/supabase-ca.crt"
+    echo "PG_CONF_DIR=$T/pg" >> "$T/backup.env"
+    unset TAR_KILL STUB_SAVED STUB_CHAT_ONLY STUB_FORGE STUB_FORGE_CHAT PG_SSL_INSECURE_LOCAL
     READERS=()
 }
 
@@ -83,6 +86,8 @@ EOF
 #!/bin/bash
 unit=""; while [ $# -gt 0 ]; do [ "$1" = -u ] && unit="$2"; shift; done
 [ -n "${STUB_CHAT_ONLY:-}" ] && [ -e "$STUB/active-$unit" ] && echo "[12:00:00] [Server thread/INFO]: <mallory> Saved the game"
+[ -n "${STUB_FORGE:-}" ] && [ -e "$STUB/active-$unit" ] && echo "[12:00:00] [Server thread/INFO] [minecraft/MinecraftServer]: Saved the game"
+[ -n "${STUB_FORGE_CHAT:-}" ] && [ -e "$STUB/active-$unit" ] && echo "[12:00:00] [Server thread/INFO] [minecraft/MinecraftServer]: <mallory> Saved the game"
 [ -n "${STUB_SAVED:-}" ] && [ -e "$STUB/active-$unit" ] && echo "[12:00:00] [Server thread/INFO]: Saved the game"
 exit 0
 EOF
@@ -94,8 +99,8 @@ while [ $# -gt 0 ]; do [ "$1" = -d ] && echo "$2" >> "$STUB/webhook.log"; shift;
 EOF
     cat > "$b/runuser" << 'EOF'
 #!/bin/bash
-# runuser -u USER -- cmd...: record the user, then run cmd as ourselves.
-echo "runuser $2" >> "$STUB/calls.log"; shift 3; exec "$@"
+# runuser -u USER -- cmd...: record the user and the command name, then run cmd as ourselves.
+echo "runuser $2" >> "$STUB/calls.log"; echo "runuser-cmd $4 $5" >> "$STUB/calls.log"; shift 3; exec "$@"
 EOF
     cat > "$b/docker" << 'EOF'
 #!/bin/bash
@@ -156,7 +161,7 @@ check "bot: db.json copied" cmp -s "$T/db.json" "$ROOT_DIR/bot/daily/$bid/db.jso
 backup supabase; check "supabase exits 0" eq $? 0
 sid="$(basename "$(only_manifest supabase)" .json)"
 check "supabase: dump written" test -s "$ROOT_DIR/supabase/daily/$sid/supabase.dump"
-check "supabase: docker run used the pinned image, schemas and custom format" grep -q 'postgres:17-alpine@sha256:test pg_dump service=chulacraft -Fc -n public -n auth -n storage' "$STUB/calls.log"
+check "supabase: docker run used the pinned image, schemas and custom format" grep -q 'postgres:17-alpine@sha256:test pg_dump service=chulacraft sslmode=verify-full sslrootcert=/pg/supabase-ca.crt -Fc -n public -n auth -n storage' "$STUB/calls.log"
 check "three manifests" eq "$(ls "$T/manifest" | wc -l)" 3
 check "no .partial left" eq "$(find "$ROOT_DIR" -name '*.partial' | wc -l)" 0
 check "archives are not world-readable" eq "$(stat -c %a "$ROOT_DIR/world/daily/$id/a.tar.zst")" 600
@@ -277,6 +282,43 @@ check "chat 'Saved the game' does not satisfy the wait: fails" test "$rc" -ne 0
 settle
 check "still waited out the timeout" test "$(($(cat "$STUB/clock") - t0))" -ge 120
 check "save-on still sent" eq "$(fifolog a | tr '\n' '|')" "save-off|save-all flush|save-on|"
+teardown
+
+echo "== Forge/NeoForge save line is accepted; its chat look-alike is not"
+setup
+world a; fifo a; running a
+STUB_FORGE=1 backup world; rc=$?
+check "forge-format 'Saved the game' satisfies the wait" eq "$rc" 0
+teardown
+setup
+world a; fifo a; running a
+STUB_FORGE_CHAT=1 backup world; rc=$?
+check "forge-format chat line does not satisfy the wait" test "$rc" -ne 0
+teardown
+
+echo "== supabase enforces TLS itself"
+setup
+rm "$T/pg/supabase-ca.crt"
+backup supabase; rc=$?
+check "missing CA: fails" test "$rc" -ne 0
+check "missing CA: docker never run" bash -c '! grep -q "^docker" "$1"' _ "$STUB/calls.log"
+: > "$T/pg/supabase-ca.crt"
+backup supabase; rc=$?
+check "empty CA: fails" test "$rc" -ne 0
+teardown
+setup
+rm "$T/pg/supabase-ca.crt"
+PG_SSL_INSECURE_LOCAL=1 backup supabase; rc=$?
+check "PG_SSL_INSECURE_LOCAL=1 skips the CA requirement" eq "$rc" 0
+check "insecure-local: plain service string" grep -q 'pg_dump service=chulacraft -Fc' "$STUB/calls.log"
+teardown
+
+echo "== FIFO writes use dd with nofollow,append"
+setup
+world a; fifo a; running a
+STUB_SAVED=1 backup world > /dev/null 2>&1
+check "runuser runs dd as the game user" grep -q '^runuser-cmd dd of=' "$STUB/calls.log"
+check "script passes oflag=nofollow,append and conv=notrunc" grep -qE 'oflag=nofollow,append conv=notrunc' "$SCRIPT"
 teardown
 
 echo "== webhook URL stays off the command line; FIFO writes drop root"
