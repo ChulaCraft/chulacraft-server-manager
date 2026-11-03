@@ -114,6 +114,12 @@ impl Config {
         match std::fs::read_to_string(path) {
             Ok(text) => Self::parse(&text),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "cannot read config file {path}: permission denied (it must be readable by this service's user, mode 0644)"
+                ),
+            )),
             Err(e) => Err(e),
         }
     }
@@ -246,6 +252,24 @@ world_instances = ["survival"]
         let c = Config::parse(include_str!("../config/mcsv_manager/config.example.toml")).unwrap();
         assert_eq!(c.services.len(), 2);
         assert_eq!(c.backups.unwrap().keep_daily, 7);
+    }
+
+    #[test]
+    fn an_unreadable_config_names_the_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("mcsv-cfg-eacces-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let readable = std::fs::read_to_string(&path).is_ok(); // running as root
+        let r = Config::load(path.to_str().unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+        if !readable {
+            let e = r.unwrap_err();
+            assert_eq!(e.kind(), io::ErrorKind::PermissionDenied);
+            assert!(e.to_string().contains("config.toml"), "{e}");
+        }
     }
 
     #[test]

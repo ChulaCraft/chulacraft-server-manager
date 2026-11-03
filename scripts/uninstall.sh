@@ -15,6 +15,11 @@ rm -f /usr/lib/systemd/system/mcsv_manager.socket \
     /usr/lib/systemd/system/minecraft@.socket \
     /usr/lib/tmpfiles.d/minecraft.conf
 
+systemctl stop mcsv-docker-proxy.service chulacraft-update@*.service 2> /dev/null || true
+systemctl disable mcsv-docker-proxy.service 2> /dev/null || true
+rm -f /etc/systemd/system/mcsv-docker-proxy.service \
+    /etc/systemd/system/chulacraft-update@.service
+
 systemctl daemon-reload
 
 if [ "$REMOVE_EVERYTHING" = true ]; then

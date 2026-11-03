@@ -115,6 +115,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let peers = Arc::new(allowed_peer_uids(
         std::env::var("MCSV_DOCKER_PROXY_UIDS").ok().as_deref(),
     )?);
+    eprintln!("mcsv-docker-proxy: allowed peer uids: root and {peers:?}");
     let _ = std::fs::remove_file(&listen);
     let listener = UnixListener::bind(&listen)?;
     // The proxy group (mcsv-docker, only the manager) reads and writes it; nobody else.

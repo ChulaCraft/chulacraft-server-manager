@@ -7,12 +7,13 @@ Known limits and accepted risks. Revisit each when its trigger or review date co
 A token carries permission bits, not a service id. Whoever holds a token with a given
 bit can use it on every service that offers that action. Accepted for now; binding
 tokens to services is future work and needs a claim agreed with chulacraft-web.
+Review date: 2027-02-02.
 
 ## The console WebSocket outlives its token
 
 The token is checked when the console WebSocket is opened. The connection is not
 closed when the token expires. Accepted for now; closing the socket at `exp` is future
-work.
+work. Review date: 2027-02-02.
 
 ## `cargo audit`: rsa and crypto-bigint advisories
 

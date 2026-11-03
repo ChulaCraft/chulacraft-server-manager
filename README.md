@@ -29,6 +29,9 @@ sudo bash scripts/setup.sh
 Configuration
 - copy [config/mcsv_manager/config.example.toml](config/mcsv_manager/config.example.toml)
   to `/etc/mcsv_manager/config.toml` and edit it (services and `[backups]`).
+  Keep the file mode 0644: it holds no secrets, and the docker proxy runs as a dynamic
+  user (group `mcsv-docker`) that must be able to read it; on a permission error it
+  names the file and exits.
   Retention and credentials for the backup script live in
   `/etc/chulacraft/backup/backup.env` (`KEEP_DAILY`, `KEEP_WEEKLY`), not here.
 
