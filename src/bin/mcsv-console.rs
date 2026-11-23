@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use chrono_english::{Dialect, parse_date_string};
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
-use mcsv_manager::models::ServerStatus;
+use mcsv_manager::{client::DEFAULT_SOCKET_PATH, models::ServerStatus};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use tokio::net::UnixStream;
@@ -12,7 +12,7 @@ use tokio_tungstenite::client_async;
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Args {
-    #[arg(short, long, default_value = "/run/mcsv_manager.sock")]
+    #[arg(short, long, default_value = DEFAULT_SOCKET_PATH)]
     socket: PathBuf,
     
     server_id: String,
